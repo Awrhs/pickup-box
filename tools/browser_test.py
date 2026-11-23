@@ -30,6 +30,19 @@ def png(path, w=64, h=48):
                 + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
+def wait_js(page, expr, timeout=60):
+    """Poll a predicate from Python. page.wait_for_function() falls back to
+    eval() inside the page when the first check fails, which our strict CSP
+    (no 'unsafe-eval') rightly blocks; page.evaluate() is not affected."""
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        if page.evaluate(expr):
+            return
+        time.sleep(0.25)
+    raise AssertionError("timed out waiting for: " + expr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1")
@@ -92,8 +105,8 @@ def main():
         link = page.get_attribute(".result .link a", "href")
         assert re.fullmatch(r"\d{6}", code), code
         assert "/p/" in link, link
-        page.wait_for_function("() => { const i = document.querySelector('.result img.qr');"
-                               " return i && i.complete && i.naturalWidth > 0; }")
+        wait_js(page, "() => { const i = document.querySelector('.result img.qr');"
+                      " return !!(i && i.complete && i.naturalWidth > 0); }")
         page.screenshot(path=f"{args.shots}/2-sent.png", full_page=True)
         print("sent: code", code, "link", link)
 
@@ -111,8 +124,8 @@ def main():
         expect(rp.locator("h1")).to_have_text("周末照片")
         expect(rp.locator(".grid li")).to_have_count(3)
         expect(rp.locator(".grid")).to_contain_text("家庭照片.png")
-        rp.wait_for_function("() => [...document.querySelectorAll('.grid img')]"
-                             ".every(i => i.complete && i.naturalWidth > 0)")
+        wait_js(rp, "() => [...document.querySelectorAll('.grid img')]"
+                    ".every(i => i.complete && i.naturalWidth > 0)")
         rp.screenshot(path=f"{args.shots}/3-pickup.png", full_page=True)
 
         with rp.expect_download() as dl:
