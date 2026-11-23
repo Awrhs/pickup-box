@@ -36,6 +36,7 @@ input, select { font: inherit; color: var(--text); background: var(--card); bord
   border-radius: 10px; padding: 10px 12px; min-width: 0; }
 .code-form { display: flex; gap: 10px; }
 .code-form input { flex: 1; font-size: 1.4rem; letter-spacing: .3em; text-align: center; }
+.code-form input::placeholder { letter-spacing: normal; font-size: 1rem; }
 .stack { display: flex; flex-direction: column; gap: 10px; }
 .picker { display: block; position: relative; overflow: hidden; padding: 16px; font-weight: 600; }
 .picker input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }

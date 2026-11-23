@@ -17,21 +17,9 @@
 
 **非目标**：公开图床、长期相册（这类需求用 Immich）、多节点 CDN。
 
-## 现有模块复用映射
+## 当前状态（2026-11-23）
 
-| 现有模块 | 在快传中的用途 | 处置 |
-| --- | --- | --- |
-| `image/tus.lua` + `upload_spool.lua` | 大文件断点续传 | 保留；finalize 改为接受任意文件类型 |
-| `image/upload.lua` | multipart 小文件上传、magic bytes 识别 | 保留；图片识别只用于决定是否生成预览，不再拒绝非图片 |
-| `image/storage_local.lua` | 按内容寻址落盘、原子写、去重 | 保留，作为 blob 存储 |
-| `image/metadata_sqlite.lua` + `sqlite_ffi.lua` | 元数据 | 保留；新增 shares/share_files 表 |
-| `image/transform.lua` + `vips_ffi.lua` + `c/` | 缩略图、预览图转 WebP | 保留，只服务预览 |
-| `image/apikey.lua` | 上传口令 | 保留；前端改为“输入一次口令，记在 cookie” |
-| `image/download_guard.lua` | 下载限流、带宽计量 | 保留；去掉 Referer/公开签名 URL 逻辑 |
-| `image/gc.lua` | 孤儿文件对账 | 改造为“过期分享 → blob 引用计数 → 删除” |
-| `image/i18n.lua`、`errors.lua`、`util.lua`、`fs_ffi.lua` | 通用 | 保留 |
-| `common/logger`、`metrics`、`circuit_breaker`、`rate_limit` | 日志、指标、熔断、上传限流 | 已就位 |
-| pHash、文字/图片水印、`/admin/analytics` | 图床特性 | 代码可保留但不暴露入口；后续再清理 |
+**可以部署使用了。** 在一台装了 Docker 的公网服务器上运行 `deploy/install.sh`（或手动配置 `PICKUP_DOMAIN` + `PICKUP_PASSWORD` 两个环境变量后 `docker compose up -d`），即可通过 HTTPS 对外提供服务。CI 每次提交都会：用安装脚本部署完整的 Caddy + HTTPS 生产栈并跑端到端测试；用 Playwright 在模拟 iPhone / Android 上走一遍发送与取件；发布 amd64 + arm64 镜像到 ghcr.io 并在两种架构上实际运行验证。
 
 ---
 
@@ -59,59 +47,52 @@
 
 ## Phase 2：数据模型
 
-- [ ] 把 `images` 表的语义改为 **blob**（一份内容只存一次）：新增 `kind`（image/video/other）和 `crc32`（打包 zip 时需要）；`orig_ext` 允许取 `bin`
-- [ ] 新增 `shares` 表：`id`、`slug`（短链，base62，8 位）、`code`（取件码，唯一，只在有效期内占用）、`title`、`created_by`、`created_at`、`expires_at`、`max_visits`、`visit_count`、`revoked`
-- [ ] 新增 `share_files` 表：`share_id`、`seq`、`blob_hash`、`filename`（原始文件名，展示和下载时用）、`size_bytes`、`mime`
-- [ ] 写迁移（沿用 `PRAGMA user_version`）。目前没有线上数据，允许直接重建库，在决策记录里注明
-- [ ] 取件码生成：用 `resty.random` 生成强随机数，与有效分享冲突时重试；生成的码不能和已过期但尚未 GC 的分享冲突
+- [x] `images` 表作为 blob（内容寻址、去重），新增 `kind`、`crc32`；非图片 `orig_ext=bin`
+- [x] `shares`（slug 10 位 base62、6 位取件码、过期、次数、撤回）与 `share_files` 表；取件码只在有效期内占用
+- [x] 迁移沿用 `PRAGMA user_version`；`metadata.tx/write/rows` 事务辅助；`db:run` 出错即抛出
+- [x] slug、取件码、上传会话 ID 全部使用 OpenSSL CSPRNG（`common.rand`）
 
 ## Phase 3：上传与分享 API
 
-- [ ] `upload.finalize` 接受任意类型：magic bytes 能识别为图片或视频时设置 `kind`，并对图片读取宽高；其他类型存为 `other`。像素上限只对图片生效
-- [ ] finalize 时计算 CRC32（C 层用 zlib 的 `crc32`，或在 `c/image_vips.c` 里加一个辅助函数），写入 blob
-- [ ] `POST /api/shares`（需要上传口令）：参数为一组已上传的 blob 和文件名、有效期、最大访问次数、标题；返回 `slug`、`code`、`url`、`expires_at`
-- [ ] `GET /api/shares/mine`：列出自己的分享。`POST /api/shares/<id>/revoke` 撤销分享；`POST /api/shares/<id>/extend` 延期
-- [ ] tus 上传完成后返回 blob hash，供前端组装分享
+- [x] 任意文件类型，按 magic bytes 分类（image/video/audio/other），图片校验像素上限
+- [x] SHA-256 + CRC-32 一次读完，C 实现、在线程池执行（`iv_digest_file`）
+- [x] `/api/upload`（multipart，多文件，可 `?share=1` 一步分享）、`/api/shares` 增删改查、预览令牌、`/api/me`、`/api/config`
+- [x] tus 重写：流式写盘、断线保留已收到的数据、会话锁、正确的校验和、空文件、完成时返回 `X-Blob-*`
 
 ## Phase 4：取件与访问控制
 
-- [ ] **关闭公开的 `/i/<hash>` 和 `/s/<slug>` 访问**。hash 会被接收方看到，如果保持公开，分享过期后仍能通过 hash 访问，过期就形同虚设
-- [ ] `GET /p/<slug>`：取件页。会检查是否撤销、是否过期、访问次数是否用完；按 D2 的规则计数
-- [ ] `GET /c/<code>` 和取件码输入页：取件码转换为 slug 后跳转。失败次数按 IP 计入 shared dict 并限流
-- [ ] `GET /p/<slug>/<seq>`：下载单个文件，通过 X-Accel-Redirect 返回，带 `Content-Disposition: attachment; filename*=UTF-8''...`；视频依赖 nginx 静态模块的 Range 支持
-- [ ] `GET /p/<slug>/<seq>/thumb?w=320`：缩略图和预览图，复用 `transform.lua` 的缓存和单飞锁
-- [ ] `GET /p/<slug>/zip`：用 store 模式（不压缩）流式输出 zip，利用预先算好的 CRC32，不落临时文件，并处理 ZIP64（总大小超过 4 GiB）
-- [ ] 安全头：对非图片和非视频的文件一律强制 `attachment`，并加 `X-Content-Type-Options: nosniff` 和 `CSP: sandbox`，防止上传的 HTML 或 SVG 被当成页面执行
+- [x] 去掉公开的 `/i/`、`/s/` 等图床接口，文件只能经由分享访问
+- [x] `/p/<slug>` 取件页（无 JS 可用）、`/c/<code>` 取件码跳转、计次 + 令牌、机器人预览不计数
+- [x] 单文件经 `ngx.exec` 交给 nginx sendfile（支持 Range）；固定两档预览尺寸；流式 zip（ZIP64）；服务端二维码
+- [x] 非图片/视频/音频一律附件下载 + `nosniff` + `CSP sandbox`；取件码与密码防暴力破解
 
-## Phase 5：前端页面（手机优先、无构建步骤、零外部 CDN 依赖）
+## Phase 5：前端页面
 
-- [ ] **上传页 `/`**：第一次使用时输入上传口令并记住；用大按钮多选文件，或调起相机；显示每个文件和总体的进度条；弱网下断线后自动续传（自写精简 tus 客户端，或把 `tus-js-client` 的固定版本放进仓库）
-- [ ] 上传完成页：显示大号取件码，提供“复制链接”“复制取件码”按钮，以及二维码（把 `qrcode-generator` 的固定版本放进仓库，在客户端生成）；可选有效期和次数
-- [ ] **取件页 `/p/<slug>`**：图片以缩略图网格展示，点开看大图；视频用 `<video>` 在线播放；其他文件显示图标和大小；提供“全部下载”按钮
-- [ ] 取件码输入页：一个数字键盘风格的输入框，适合老人使用
-- [ ] “我的分享”页：剩余时间、访问次数，提供撤销和延期操作
-- [ ] 文案与 i18n：默认中文，错误提示改成大白话（例如“这个分享已经过期了，请让对方重新发一次”）
+- [x] 首页：取件码输入 + 发送（登录一次、选择文件、有效期/次数/备注、逐文件进度、断网自动重试与续传、防息屏）
+- [x] 发送结果：大号取件码、链接、二维码、复制/系统分享
+- [x] 取件页：缩略图网格、视频/音频在线播放、单个下载、全部打包；微信内置浏览器提示
+- [x] “我的分享”：复制、预览（不计次）、延期、撤回；管理员可看所有人
 
 ## Phase 6：过期清理与容量保护
 
-- [ ] 改造 `gc.lua`（只在 worker 0 运行）：把过期或撤销的分享标记为失效，然后释放取件码；某个 blob 不再被任何有效分享引用时，删除原文件和派生缓存
-- [ ] tus 未完成的上传 24 小时后自动清理
-- [ ] 上传前检查磁盘水位和口令配额（按 D3 的数值）
-- [ ] 指标：在 `metrics` 中新增 `shares_created`、`shares_expired`、`pickup_code_failures`、`bytes_served`
+- [x] GC（worker 0）：释放失效分享的取件码、清除过期记录、删除无引用 blob 及其缓存、清理过期 tus 会话与残留临时文件
+- [x] 上传前检查磁盘水位与口令配额（管理员不受配额限制）
+- [ ] 指标：`shares_created`、`pickup_code_failures` 等业务指标（目前只有上传/处理/下载类指标）
 
 ## Phase 7：部署与文档
 
-- [ ] 基于 `deploy/Caddyfile.example` 写一份 VPS 一键部署说明，Caddy 自动申请 HTTPS
-- [ ] 文档写明现实约束：家宽通常没有公网 IP 且上行带宽小；国内 VPS 用域名需要备案，香港 VPS 免备案但速度一般
-- [ ] 快传功能完成后更新 `README.md`、`CLAUDE.md`、`docs/USAGE.md`
-- [ ] CI 加入 `tools/smoke_share.sh`
+- [x] `deploy/docker-compose.yml` + `Caddyfile`（自动 HTTPS）+ `install.sh`（一行命令安装）
+- [x] 多架构镜像发布到 ghcr.io（公开可匿名拉取），发布后在 amd64 与 arm64 上实际运行验证
+- [x] README（部署 3 步、配置、使用、运维）、docs/API.md、SECURITY.md、CLAUDE.md、CONTRIBUTING.md
+- [ ] 打版本标签（v0.1.0）并让 compose 默认使用固定版本
 
 ## Phase 8：验证
 
-- [ ] `tools/smoke_share.sh`：覆盖上传口令错误被拒、上传图片+视频+zip、创建分享、用 slug 取件、用取件码取件、缩略图、单文件下载、全部打包下载、撤销后返回 404/410、过期后返回 410、取件码连续失败触发限流
-- [ ] `spec/unit/`：覆盖取件码生成与冲突、过期判断、zip 头部构造（包括 ZIP64 边界）、文件名转义
-- [ ] 手机实测：在 iOS Safari 和安卓微信内置浏览器里各走一遍上传和取件，包括切到后台再回来续传
-- [ ] 压测：wrk 压取件页和缩略图，大文件下载验证 sendfile 和带宽
+- [x] `tools/e2e.py`：约 80 项端到端检查（上传/续传/校验和/配额/分享/取件码/Range/中文文件名/HTML 附件/预览/zip 与 ZIP64/二维码/次数/机器人/撤回/延期/过期/防暴力破解/GC）
+- [x] `tools/browser_test.py`：Playwright 在模拟手机上走完整发送与取件流程，截图存档
+- [x] `spec/unit/`：配置解析、文件名清洗、UTF-8、CRC-32、类型识别、zip 结构（含 ZIP64）
+- [ ] 真机实测：iOS Safari、安卓微信内置浏览器（含切后台续传）——需要真人手机
+- [ ] 压力测试：并发取件页、缩略图、大文件下载
 
 ---
 

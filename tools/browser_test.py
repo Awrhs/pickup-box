@@ -54,7 +54,9 @@ def main():
         page = sender_ctx.new_page()
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
-        page.on("console", lambda m: m.type == "error" and errors.append(m.text))
+        # Expected HTTP errors (the deliberate wrong password) are not JS bugs.
+        page.on("console", lambda m: m.type == "error" and not re.search(
+            r"Failed to load resource: .*status of (401|404|410)", m.text) and errors.append(m.text))
 
         # ---- sender: log in --------------------------------------------
         page.goto(args.base + "/")

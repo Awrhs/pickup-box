@@ -167,13 +167,15 @@ jobs:
           load: true
           tags: ghcr.io/awrhs/pickup-box:ci
           cache-from: type=gha
-      - name: Start like a user would
-        working-directory: deploy
+      - name: Install like a user would (deploy/install.sh)
+        env:
+          PICKUP_RAW_BASE: file://${{ github.workspace }}/deploy
+          PICKUP_DIR: ${{ runner.temp }}/pb
+          PICKUP_DOMAIN: localhost
+          PICKUP_PASSWORD: ci-deploy-password-123
+          PICKUP_VERSION: ci
         run: |
-          cp ../.env.example .env
-          sed -i 's/^PICKUP_DOMAIN=.*/PICKUP_DOMAIN=localhost/; s/^PICKUP_PASSWORD=.*/PICKUP_PASSWORD=ci-deploy-password-123/' .env
-          echo 'PICKUP_VERSION=ci' >> .env
-          docker compose up -d
+          sh deploy/install.sh
           for i in $(seq 1 90); do curl -skf https://localhost/healthz >/dev/null && break; sleep 1; done
           curl -sk https://localhost/readyz; echo
       - name: HTTP redirects to HTTPS
@@ -182,7 +184,7 @@ jobs:
         run: python3 -I tools/e2e.py --base https://localhost --insecure --password ci-deploy-password-123
       - name: Logs
         if: always()
-        working-directory: deploy
+        working-directory: ${{ runner.temp }}/pb
         run: docker compose logs --tail=200
 
   publish:
@@ -214,3 +216,35 @@ jobs:
             ghcr.io/awrhs/pickup-box:sha-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  verify-published:
+    name: Run the published image (${{ matrix.arch }})
+    needs: [ publish ]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install from ghcr.io with deploy/install.sh
+        env:
+          PICKUP_RAW_BASE: file://${{ github.workspace }}/deploy
+          PICKUP_DIR: ${{ runner.temp }}/pb
+          PICKUP_DOMAIN: localhost
+          PICKUP_PASSWORD: ci-published-password-123
+          PICKUP_VERSION: sha-${{ github.sha }}
+        run: |
+          sh deploy/install.sh
+          for i in $(seq 1 120); do curl -skf https://localhost/healthz >/dev/null && break; sleep 1; done
+          curl -sk https://localhost/healthz; echo
+      - name: End-to-end over HTTPS
+        run: python3 -I tools/e2e.py --base https://localhost --insecure --password ci-published-password-123
+      - name: Logs
+        if: always()
+        working-directory: ${{ runner.temp }}/pb
+        run: docker compose logs --tail=100

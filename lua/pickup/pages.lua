@@ -68,7 +68,7 @@ local function layout(title, body, opts)
         '<meta name="referrer" content="no-referrer">',
         '<meta name="robots" content="noindex,nofollow">',
         '<title>', esc(title), '</title>',
-        '<link rel="stylesheet" href="/static/app.css?v=1">', head_extra, scripts,
+        '<link rel="stylesheet" href="/static/app.css?v=2">', head_extra, scripts,
         '</head><body><header class="top"><a class="brand" href="/">', esc(pconfig.site_name),
         '</a></header><main>', body,
         '</main><footer class="foot">由 pickup-box 提供 · 文件到期后自动删除</footer></body></html>',

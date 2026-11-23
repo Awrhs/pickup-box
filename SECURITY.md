@@ -1,53 +1,42 @@
 # Security Policy
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-**Do not open a public GitHub issue for security vulnerabilities.**
+Please do not open a public issue for security problems. Use GitHub's
+"Report a vulnerability" (private security advisory) on this repository,
+with steps to reproduce and the affected version/commit.
 
-Email the maintainer(s) with a description of the issue, reproduction steps,
-and the commit/version affected. Expect an acknowledgement within 72 hours.
+## Threat model
 
-Please do not disclose the issue publicly until a fix has been released and
-end users have had time to upgrade.
+pickup-box is meant to run behind the bundled Caddy reverse proxy (HTTPS).
 
-## Threat Model
+- **Senders** authenticate with a password (`Authorization: Bearer`). Only
+  `sha256(password)` is kept in memory; uploads, shares and quota usage are
+  attributed to that hash. Failed logins are limited per IP (10 per 15 min).
+- **Recipients** are anonymous. A share is reachable by its 10-character
+  random link or its numeric pickup code. Code guesses are limited per IP
+  (10 per hour) and globally (300 per hour); with 6 digits and few live shares
+  guessing is impractical, but pickup codes are meant for short-lived,
+  non-sensitive transfers. Use a visit limit and a short expiry for sensitive
+  files.
+- **Visit limits** are enforced when the pickup page is opened; opening it
+  yields a signed token (HMAC-SHA256, server secret generated on first start)
+  that allows reloading and downloading for a few hours. Link-preview bots do
+  not consume visits. A recipient can forward the tokenised URL; the limit is a
+  convenience, not DRM.
+- **Uploaded content** is classified by magic bytes, never by file name. Only
+  images, video and audio may be shown inline, always with `X-Content-Type-
+  Options: nosniff` and a sandboxing CSP; everything else (HTML, SVG, PDF, …)
+  is served as an attachment. Pages use a strict CSP without inline scripts.
+- **Storage** is content-addressed by SHA-256. Expired or revoked shares stop
+  working immediately; their files are deleted by the garbage collector once
+  no live share references them.
+- `/metrics` is never forwarded by Caddy and only answers inside the container
+  unless `PICKUP_METRICS_TOKEN` is set.
 
-pickup-box is intended to be deployed behind a TLS-terminating reverse
-proxy (Caddy, nginx, Cloudflare, ...). It is not hardened to be exposed
-directly on the public internet.
+## Hardening checklist
 
-The service treats API keys as bearer tokens:
-- Secrets are stored only as `sha256(secret)` in memory and in the database.
-- API keys may be provided via `Authorization: Bearer ...` (recommended) or
-  `?api_key=...` (legacy; can be disabled with `IMAGE_ALLOW_QUERY_KEY=false`).
-- Plain-text secrets are never written to logs (the access log format for
-  image endpoints omits the query string).
-- Downloads may be HMAC-signed (`IMAGE_DOWNLOAD_SIGNED_URLS=true`); signatures
-  cover the path, expiry, and all transform parameters.
-
-## Hardening Checklist for Production
-
-1. Set a strong `IMAGE_DOWNLOAD_SECRET` (≥32 chars,
-   unique, random).
-2. Set `IMAGE_ALLOW_QUERY_KEY=false`.
-3. Set `IMAGE_REQUIRE_STRONG_SECRET=true`.
-4. Run behind HTTPS; the gateway itself does not terminate TLS.
-5. Set `TRUST_X_FORWARDED_FOR=true` and `IMAGE_TRUSTED_PROXY_HOPS=<n>` if
-   deployed behind a reverse proxy. Without this, all requests appear to
-   come from the proxy IP and per-IP limits are ineffective.
-6. Use `IMAGE_DEFAULT_QUOTA_BYTES` and per-key quotas.
-7. Enable `IMAGE_DOWNLOAD_REFERER_MODE=allow` with a host allow list, or
-   require signed URLs (`IMAGE_DOWNLOAD_SIGNED_URLS=true`).
-8. Mount `/data` on a persistent, encrypted volume and set up backups.
-9. Restart on a schedule (or enable live reload for the API key file) when
-   using `IMAGE_API_KEY_FILE` for key rotation.
-
-## Known Limitations
-
-- There is no built-in virus scanning; uploads are validated by magic
-  bytes and pixel dimensions only.
-- Original images are stored verbatim. If you serve the public internet,
-  set `IMAGE_ORIGINAL_DISPOSITION=attachment` or front the gateway with a
-  CDN that re-encodes images, to defeat polyglot files.
-- Multi-node deployments share no state (SQLite is local, rate-limits are
-  per-node). Use a sticky-session load balancer or externalize state.
+1. Use a long random `PICKUP_PASSWORD` (the installer generates one).
+2. Keep the server and the image updated (`docker compose pull && docker compose up -d`).
+3. Give family members their own `PICKUP_USERS` accounts with a quota instead of sharing the admin password.
+4. Keep `PICKUP_MIN_FREE_PERCENT` so uploads cannot fill the disk.

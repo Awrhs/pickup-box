@@ -4,43 +4,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-pickup-box: a self-hosted file/photo pickup service built on **OpenResty (Nginx + LuaJIT)**. Current code is an upload + storage + on-the-fly image processing baseline; share links, pickup codes and expiry are being added (see `PROGRESS.md`).
+pickup-box: a self-hosted file/photo pickup service. Senders (password) upload files and get a share link + numeric pickup code; recipients (no account) open the link or enter the code to preview/download. Shares expire, can be visit-limited, revoked, extended.
 
-Primary language is **Lua** (OpenResty); image work is done in **C** (`c/image_vips.c`, libvips) called through LuaJIT FFI. SQLite is also accessed via FFI (`lua/image/sqlite_ffi.lua`).
+Stack: **OpenResty (Nginx + LuaJIT)**. Previews by **libvips in C** (`c/image_vips.c`) via LuaJIT FFI on the nginx thread pool; **SQLite** via FFI (`lua/image/sqlite_ffi.lua`); QR codes via **libqrencode** FFI. Production runs behind **Caddy** (automatic HTTPS) using `deploy/docker-compose.yml`.
 
 ## Commands
 
-No local build step; everything runs in the container.
-
 ```bash
-cp .env.example .env            # first time only; set IMAGE_API_KEYS
-docker compose up -d --build
-./tools/smoke_image.sh          # end-to-end smoke test (needs API_KEY/ADMIN_KEY env)
-docker compose exec pickup-box openresty -s reload   # after editing lua/ or nginx.conf
-busted --lpath='lua/?.lua' spec/unit                 # unit tests
+cp .env.example .env              # set PICKUP_PASSWORD; leave PICKUP_DOMAIN empty locally
+docker compose up -d --build      # dev stack (bind-mounts lua/, static/, conf/nginx.conf)
+docker compose exec pickup-box openresty -s reload   # after editing Lua/nginx.conf
+python3 -I tools/e2e.py --base http://127.0.0.1 --password <pw>   # API end-to-end
+python3 tools/browser_test.py --base http://127.0.0.1 --password <pw>  # Playwright UI test
+resty spec/run.lua spec/unit      # unit tests (inside an OpenResty image with busted)
+python3 -I tools/gen_env.py       # regenerate nginx `env` block after adding env vars
 ```
 
-`lua/` and `conf/nginx.conf` are bind-mounted; `lua_code_cache on` means you must reload after edits.
-
-**CI is the primary test bed** (`.github/workflows/ci.yml`): luajit syntax + luacheck + a guard against old-name references, busted unit tests, docker build + `openresty -t`, and the compose smoke test. Use `gh run view --log-failed` to read failures.
+No docker/luajit locally by default: **GitHub Actions is the test bed** (`.github/workflows/ci.yml`: lint incl. luacheck/JS/py syntax/env-block check, unit, e2e with short-expiry + brute-force + GC, Playwright browser test, HTTPS deploy via `deploy/install.sh`, publish multi-arch image to ghcr.io, then run the published image on amd64 and arm64). Read failures with `gh run view --job <id> --log`.
 
 ## Layout
 
-- `conf/nginx.conf` — route table. `env`/`thread_pool` live in main context; `limit_*_zone`, `lua_package_path`, `init_by_lua_block`, shared dicts live inside `http {}`. Comments outside Lua blocks must use `#`, not `--`.
-- `lua/common/` — `logger` (JSON logs, per-request `trace_id`), `metrics` (Prometheus, prefix `pickupbox_`), `circuit_breaker`, `rate_limit` (per-key upload throttle).
-- `lua/image/` — `upload`/`upload_spool`/`tus` (ingest), `storage_local` (content-addressed `ab/cd/<hash>.<ext>`), `metadata_sqlite` (schema + migrations via `PRAGMA user_version`), `transform`/`processing`/`vips_ffi` (derivatives), `download_guard`, `gc`, `cache_maintenance`, `stats_flush`, `ops` (healthz/readyz/metrics), `main` (HTTP handlers/pages).
+- `conf/nginx.conf` — routes. `env`/`thread_pool` in main context (env block between `#@ENV@`/`#@END_ENV@` is generated); everything else inside `http {}`. Comments outside Lua blocks use `#`.
+- `lua/pickup/` — product: `config` (PICKUP_* env, size/duration parsing), `shares` (model, tokens, names), `api` (/api/*), `pages` (server-rendered HTML), `files` (file/thumb/zip/qr serving), `zip` (streaming store-only ZIP64 writer), `qr`, `sniff` (magic-byte classification), `guard` (brute-force limits), `gc`, `secret`, `init` (master/worker hooks).
+- `lua/image/` — engine: `upload` (blob store()), `upload_spool` (multipart), `tus` (resumable), `storage_local` (content-addressed `orig/ab/cd/<sha256>.<ext>`), `metadata_sqlite` (schema, migrations, `tx`/`write`/`rows`), `transform`/`processing`/`vips_ffi` (previews), `apikey` (Bearer auth), `ops` (healthz/readyz/metrics).
+- `lua/common/` — logger, metrics (`pickupbox_` prefix), circuit_breaker, rate_limit, crypto (HMAC), digest (CRC-32), rand (CSPRNG).
+- `static/` — CSS/JS for the send page (`app.js`, own tus client) and `/me` (`me.js`); `common.js` shared.
+- `deploy/` — production compose + Caddyfile + `install.sh`.
 
-## Conventions
+## Conventions and gotchas
 
-- **Config is env-only**, read at module load. A new env var must be added to `conf/nginx.conf` (`env VAR;`), `docker-compose.yml`, and `.env.example`, or nginx hides it from Lua.
-- **Cross-worker state** goes in a `lua_shared_dict` declared in `nginx.conf`; namespace keys.
-- **Non-blocking I/O only** in request handlers. libvips calls go through `ngx.run_worker_thread` (thread pool `default`) behind a per-worker semaphore.
-- **Background timers run on worker 0 only** (`ngx.worker.id() == 0`).
-- Files are served via `X-Accel-Redirect` to the internal `/__image_file/` location (sendfile), not read into Lua.
-- Constant-time comparisons for secrets (`apikey.lua`, `download_guard.lua`); never replace with `==`.
-- Migrations in `metadata_sqlite.lua` are positional; append, never reorder or delete.
-
-## Workflow
-
-- Plan multi-file changes first; keep `PROGRESS.md` (the task checklist) current — check items off as phases actually complete and update when scope shifts.
-- Verify via CI (push a branch / PR) since there is no local runtime by default.
+- **Env vars**: read at module load. Add new ones to `.env.example`/README, then run `tools/gen_env.py` (CI fails if the nginx `env` block is stale; nginx hides undeclared vars from workers).
+- **Serving files**: set headers, then `ngx.exec("/__blob/...")` (internal location, sendfile + Range). `X-Accel-Redirect` does NOT work from `content_by_lua`.
+- **libvips varargs**: array options (e.g. `background`) need `VipsArrayDouble*` (`vips_array_double_newv`), never a raw C array — that segfaulted the worker. Only pass options a saver defines (`interlace` only for jpeg/png, `Q` not for gif).
+- **`ngx.exit` never returns**: release locks before calling helpers that respond (see `tus.complete`).
+- **DB**: `metadata.tx(fn)` re-raises fn errors unchanged (tables allowed); `db:run` raises on SQLite errors. Migrations are positional — append only.
+- **Randomness**: use `common.rand` (OpenSSL), never `math.random`, for slugs/codes/ids.
+- **Timers** run on worker 0 only. Visit counting: page open without a valid token consumes a visit and redirects to `?t=`; bots (link previews) never consume.
+- Keep `PROGRESS.md` (task checklist) current; plan multi-file changes first; verify via CI.

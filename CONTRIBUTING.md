@@ -1,51 +1,40 @@
 # Contributing
 
-Thanks for your interest! This document covers the basics of hacking on
-pickup-box.
-
-## Project Layout
+## Layout
 
 ```
-conf/nginx.conf         — nginx config and route table
-lua/common/            — logger, metrics, circuit breaker, rate limit
-lua/image/             — upload, storage, metadata, transform, ops endpoints
-c/image_vips.c/.h      — libvips helper compiled to image_vips.so
-tools/                 — smoke tests, backup/restore scripts
-spec/unit/             — busted unit tests
-docs/                  — long-form documentation
+conf/nginx.conf      routes and nginx settings
+lua/pickup/          product logic: shares, pages, API, zip, QR, GC
+lua/image/           engine: uploads (multipart + tus), storage, SQLite, previews
+lua/common/          logger, metrics, crypto, digest, rand, rate limit
+c/image_vips.c       libvips helper compiled to image_vips.so (previews, digests)
+static/              CSS and JavaScript for the send page and /me
+deploy/              production compose, Caddyfile, install.sh
+tools/               e2e.py (API), browser_test.py (Playwright), gen_env.py
+spec/unit/           busted unit tests (run under the resty CLI)
 ```
 
-## Local Development
+## Local development
 
 ```bash
-cp .env.example .env
+cp .env.example .env            # set PICKUP_PASSWORD, leave PICKUP_DOMAIN empty
 docker compose up -d --build
-./tools/smoke_image.sh
+python3 -I tools/e2e.py --base http://127.0.0.1 --password "$PICKUP_PASSWORD"
 ```
 
-The container bind-mounts `lua/` and `conf/nginx.conf`, so edits are picked
-up with `docker compose exec pickup-box openresty -s reload`.
+`lua/`, `static/` and `conf/nginx.conf` are bind-mounted; apply changes with
+`docker compose exec pickup-box openresty -s reload`.
 
-## Code Style
+## Rules
 
-- Lua modules return a table; use `local _M = {}` / `return _M`.
-- Use `ngx.log` / the structured `common.logger` for log events, not `print`.
-- All environment variables follow the `IMAGE_*` prefix and are
-  declared with `env ...` in `nginx.conf`.
-- New C code must compile with `-Wall -Wextra -Werror` under gcc/musl and
-  pass the hardened build flags in the Dockerfile.
-- Add unit tests under `spec/unit/` and an entry in `tools/smoke_image.sh`
-  for new endpoints or behaviors.
+- Configuration is environment variables only. After adding one, document it
+  in `.env.example`/README and run `python3 -I tools/gen_env.py`.
+- Use `common.rand` for anything that must be unguessable.
+- Serve stored files through `ngx.exec` to the internal `/__blob/` location.
+- New endpoints need coverage in `tools/e2e.py`; UI changes in
+  `tools/browser_test.py`.
+- C code must build warning-free with the hardened flags in the Dockerfile.
 
-## Commit Messages
+## Before opening a PR
 
-Use plain English in the imperative mood. Reference the task id from
-PROGRESS.md if any. Example: `image: add pickup code lookup`.
-
-## Before Opening a PR
-
-1. All existing and new tests pass.
-2. `luajit -bl` succeeds for every Lua module.
-3. The Docker image builds.
-4. Update `PROGRESS.md` and `docs/` for user-facing changes.
-5. Do not commit `.env`, `logs/`, or build artifacts.
+CI must be green: lint, unit, e2e, browser and deploy jobs.
