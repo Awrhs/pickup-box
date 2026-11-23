@@ -56,6 +56,10 @@ function _M.serve_file(share, f)
     local download = ngx.var.arg_dl == "1" or not sniff.INLINE[f.kind]
     ngx.header["Content-Type"] = f.mime
     ngx.header["Content-Disposition"] = _M.disposition(download and "attachment" or "inline", f.name)
+    -- Inline media are rendered in a sandbox; attachments are never
+    -- rendered, and WebKit refuses to download a sandboxed response.
+    ngx.header["Content-Security-Policy"] = download and "default-src 'none'"
+        or "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox"
     ngx.header["Cache-Control"] = "private, no-cache"
     ngx.ctx.pb_bytes_file = true
     return ngx.exec(storage.to_internal_uri(path))

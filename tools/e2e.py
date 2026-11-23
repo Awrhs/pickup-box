@@ -311,7 +311,8 @@ class T:
 
         st, hd, data = self.c.req("GET", f"/p/{slug}/f/1?{q}")
         check("image served inline", st == 200 and data == self.png and hd.get("content-type") == "image/png"
-              and hd.get("content-disposition", "").startswith("inline"), str(hd))
+              and hd.get("content-disposition", "").startswith("inline")
+              and "sandbox" in hd.get("content-security-policy", ""), str(hd))
         st, hd, data = self.c.req("GET", f"/p/{slug}/f/1?{q}&dl=1")
         check("dl=1 forces attachment", st == 200 and hd.get("content-disposition", "").startswith("attachment"))
         st, hd, data = self.c.req("GET", f"/p/{slug}/f/2?{q}", headers={"Range": "bytes=10-19"})
@@ -320,8 +321,10 @@ class T:
         cd = hd.get("content-disposition", "")
         check("utf-8 file name in Content-Disposition", data == self.txt and "UTF-8''%E6%B5%8B%E8%AF%95" in cd, cd)
         st, hd, data = self.c.req("GET", f"/p/{slug}/f/4?{q}")
-        check("html served as attachment", hd.get("content-disposition", "").startswith("attachment")
-              and "sandbox" in hd.get("content-security-policy", ""), str(hd))
+        check("html served as attachment without sandbox (WebKit downloads)",
+              hd.get("content-disposition", "").startswith("attachment")
+              and "sandbox" not in hd.get("content-security-policy", "sandbox")
+              and hd.get("x-content-type-options") == "nosniff", str(hd))
         st, hd, data = self.c.req("GET", f"/p/{slug}/f/1/thumb?{q}&s=s", headers={"Accept": "image/webp,*/*"})
         check("webp preview", st == 200 and hd.get("content-type") == "image/webp" and data[:4] == b"RIFF", f"st={st} {hd}")
         st, hd, data = self.c.req("GET", f"/p/{slug}/f/1/thumb?{q}&s=l", headers={"Accept": "image/jpeg"})

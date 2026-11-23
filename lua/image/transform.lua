@@ -172,8 +172,11 @@ end
 -- internal redirect to the internal blob location. Headers set here survive
 -- the redirect. (X-Accel-Redirect is only honoured for proxied upstream
 -- responses, not for content_by_lua, hence ngx.exec.)
+local IMAGE_CSP = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"
+
 local function stream_file(path, mime, immutable, vary_accept, etag, size)
     ngx.header["Content-Type"] = mime
+    ngx.header["Content-Security-Policy"] = IMAGE_CSP
     set_cache_headers(immutable, vary_accept)
     if etag then ngx.header["ETag"] = etag end
     record_bytes(size or storage.size(path) or 0)
@@ -183,6 +186,8 @@ end
 -- Serve encoded bytes straight from memory.
 local function serve_bytes(data, mime, immutable, vary_accept, etag)
     ngx.header["Content-Type"] = mime
+    ngx.header["Content-Security-Policy"] = IMAGE_CSP
+    ngx.header["X-Content-Type-Options"] = "nosniff"
     set_cache_headers(immutable, vary_accept)
     if etag then ngx.header["ETag"] = etag end
     ngx.header["Content-Length"] = #data
