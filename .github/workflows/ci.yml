@@ -203,10 +203,43 @@ jobs:
         working-directory: ${{ runner.temp }}/pb
         run: docker compose logs --tail=200
 
+  deploy-http:
+    name: Production compose without a domain (HTTP)
+    runs-on: ubuntu-latest
+    needs: [ docker ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (cached)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: ghcr.io/awrhs/pickup-box:ci
+          cache-from: type=gha
+      - name: Install with an empty PICKUP_DOMAIN and no terminal
+        env:
+          PICKUP_RAW_BASE: file://${{ github.workspace }}/deploy
+          PICKUP_DIR: ${{ runner.temp }}/pb
+          PICKUP_DOMAIN: ""
+          PICKUP_VERSION: ci
+        run: |
+          sh deploy/install.sh < /dev/null | tee install.log
+          grep -q "上传密码" install.log
+          for i in $(seq 1 90); do curl -sf http://localhost/healthz >/dev/null && break; sleep 1; done
+      - name: End-to-end over plain HTTP through Caddy
+        run: |
+          pw=$(sed -n 's/^PICKUP_PASSWORD=//p' "${{ runner.temp }}/pb/.env")
+          python3 -I tools/e2e.py --base http://localhost --password "$pw" --only basics,auth,uploads,shares
+      - name: Logs
+        if: always()
+        working-directory: ${{ runner.temp }}/pb
+        run: docker compose logs --tail=100
+
   publish:
     name: Publish image (ghcr.io)
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [ lint, unit, e2e, browser, deploy ]
+    needs: [ lint, unit, e2e, browser, deploy, deploy-http ]
     runs-on: ubuntu-latest
     permissions:
       contents: read

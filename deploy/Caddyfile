@@ -1,8 +1,9 @@
 # Caddy terminates TLS (certificates from Let's Encrypt, renewed
 # automatically) and forwards everything to pickup-box.
 #
-# PICKUP_DOMAIN unset -> plain HTTP on port 80 (for a quick test by IP).
-{$PICKUP_DOMAIN::80} {
+# PICKUP_SITE_ADDRESS is set by docker-compose.yml from PICKUP_DOMAIN; it is
+# ":80" (plain HTTP, for a quick test by IP) when no domain is configured.
+{$PICKUP_SITE_ADDRESS::80} {
 	# Internal endpoints are never exposed.
 	@internal path /metrics /__blob/*
 	respond @internal 404

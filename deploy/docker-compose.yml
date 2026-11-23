@@ -32,7 +32,9 @@ services:
       - "443:443"
       - "443:443/udp"
     environment:
-      PICKUP_DOMAIN: ${PICKUP_DOMAIN:-}
+      # Empty PICKUP_DOMAIN -> plain HTTP on port 80. (Compose's ":-" also
+      # covers "set but empty", which Caddy's own default syntax does not.)
+      PICKUP_SITE_ADDRESS: ${PICKUP_DOMAIN:-:80}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

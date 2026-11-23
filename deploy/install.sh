@@ -33,7 +33,9 @@ if [ -f .env ]; then
     say "沿用已有的 .env（如需修改请直接编辑它）。"
 else
     domain="${PICKUP_DOMAIN:-}"
-    if [ -z "$domain" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    # Ask only when PICKUP_DOMAIN was not given at all (an explicitly empty
+    # value means "HTTP only") and a terminal is really available.
+    if [ -z "${PICKUP_DOMAIN+x}" ] && { : < /dev/tty; } 2>/dev/null; then
         printf '你的域名（已解析到本机，例如 files.example.com；直接回车则先用 http://服务器IP 测试）: ' > /dev/tty
         read -r domain < /dev/tty || domain=""
     fi
