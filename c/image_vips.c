@@ -53,8 +53,9 @@ static void iv_init_once(void) {
         /* Keep the operation cache small — these are short-lived requests. */
         vips_cache_set_max(16);
         vips_concurrency_set(1);
-        /* Cap tracked memory so a pathological decode cannot grow unbounded. */
-        vips_tracked_set_limit(256UL * 1024 * 1024);  /* 256 MiB */
+        /* Bound the operation cache's memory. Decode size is bounded
+           separately by the Lua-side pixel limit (IMAGE_MAX_PIXELS). */
+        vips_cache_set_max_mem(64UL * 1024 * 1024);  /* 64 MiB */
         g_once_init_leave(&inited, 1);
     }
 }

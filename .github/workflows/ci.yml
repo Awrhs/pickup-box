@@ -40,12 +40,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install luajit + busted (Ubuntu packages; LuaJIT loads Lua 5.1 modules)
+      - name: Run specs inside OpenResty (resty CLI)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y luajit lua-busted
-      - name: Run specs under LuaJIT
-        run: luajit -e 'package.path="lua/?.lua;"..package.path' "$(command -v busted)" spec/unit
+          docker run --rm -v "$PWD":/w -w /w openresty/openresty:1.21.4.1-alpine-fat sh -euc '
+            apk add --no-cache luarocks5.1 lua5.1-dev gcc musl-dev >/dev/null
+            luarocks-5.1 install busted >/dev/null
+            resty spec/run.lua spec/unit
+          '
 
   docker:
     name: Build image + nginx -t

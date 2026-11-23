@@ -56,8 +56,11 @@ COPY --from=builder /opt/pickup-box/c/image_vips.so /opt/pickup-box/c/image_vips
 COPY lua/ /opt/pickup-box/lua/
 COPY conf/nginx.conf /usr/local/openresty/nginx/conf/nginx.conf
 
-RUN mkdir -p /data/images/orig /data/images/cache /data/images/tmp \
-    && chown -R nginx:nobody /data \
+# Unprivileged account for nginx worker processes. The master stays root so
+# it can bind :80; workers drop to this user (see `user` in nginx.conf).
+RUN addgroup -S pickup && adduser -S -D -H -G pickup pickup \
+    && mkdir -p /data/images/orig /data/images/cache /data/images/tmp /var/log/nginx \
+    && chown -R pickup:pickup /data \
     && chmod -R 0755 /data
 
 # Build-time version metadata. Pass --build-arg GIT_SHA=$(git rev-parse HEAD)
@@ -65,7 +68,3 @@ RUN mkdir -p /data/images/orig /data/images/cache /data/images/tmp \
 ARG GIT_SHA=dev
 ARG BUILD_DATE=unknown
 RUN echo "${GIT_SHA} ${BUILD_DATE}" > /opt/pickup-box/VERSION
-
-# Run as the unprivileged nginx user. The OpenResty base image already
-# creates this uid.
-USER nginx
