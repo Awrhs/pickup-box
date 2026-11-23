@@ -87,7 +87,9 @@
 - [x] 无域名（纯 HTTP、用 IP 试用）模式、镜像加速地址（`PICKUP_IMAGE`/`CADDY_IMAGE`）、常见问题排查
 - [x] Caddy 后面按真实客户端 IP 限流（nginx realip，仅在 `TRUST_X_FORWARDED_FOR=true` 时启用）
 - [ ] 打版本标签（v0.1.0）并让 compose 默认使用固定版本（目前 `latest` 只在 main 分支全部测试通过后才发布）
-- [ ] 用真实域名在真实服务器上走一遍 Let's Encrypt 签证书（CI 里用的是 Caddy 内置 CA 签 `localhost`）
+- [x] **真实公网部署验证**（`.github/workflows/public-demo.yml`，手动触发）：在 GitHub 的机器上只配环境变量、用 `install.sh` 拉取 ghcr.io 发布的镜像部署，通过 Cloudflare 临时隧道获得公网 HTTPS 域名；在公网域名上跑通接口端到端测试与 Chromium/WebKit 浏览器测试；用原样的 `deploy/Caddyfile` 为另一个公网域名向 Let's Encrypt 申请到证书，并在完整证书校验下通过它访问应用
+- [x] 2026-11-23 实测：从另一台机器（不同网络）对公网地址跑端到端测试 60 项全部通过；收件人用取件码取件、下载 zip 正常；check-host.net 全球 12 个探测点中 10 个 HTTP 200（其余 2 个为探测节点自身网络问题）
+- [ ] 家庭宽带等无公网 IP 的场景：文档化 Cloudflare Tunnel（命名隧道）部署方式，并让应用信任 `CF-Connecting-IP` 以便按真实访客限流
 
 ## Phase 8：验证
 

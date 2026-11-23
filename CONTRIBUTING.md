@@ -35,6 +35,15 @@ python3 -I tools/e2e.py --base http://127.0.0.1 --password "$PICKUP_PASSWORD"
   `tools/browser_test.py`.
 - C code must build warning-free with the hardened flags in the Dockerfile.
 
+## Testing a real public deployment
+
+`Actions → Public demo → Run workflow` deploys the published image with
+`deploy/install.sh` on a runner, exposes it through a Cloudflare quick tunnel,
+runs `tools/e2e.py` and the browser test against the public HTTPS hostname,
+obtains a Let's Encrypt certificate with the unmodified `deploy/Caddyfile`,
+and stays online for the requested minutes (needs the `DEMO_PASSWORD`
+repository secret). It is a test deployment, not hosting.
+
 ## Before opening a PR
 
 CI must be green: lint, unit, e2e, browser and deploy jobs.
