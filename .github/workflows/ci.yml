@@ -262,9 +262,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/host-caddy/sites"
           printf '{\n  admin off\n  http_port 80\n  https_port 443\n}\nimport /etc/caddy/sites/*.conf\n' \
             > "$RUNNER_TEMP/host-caddy/Caddyfile"
+          # The server already hosts a site (Caddy only listens when it has one).
+          printf 'existing.localhost {\n  respond "existing site"\n}\n' \
+            > "$RUNNER_TEMP/host-caddy/sites/existing.localhost.conf"
           docker run -d --name host-caddy --network host \
             -v "$RUNNER_TEMP/host-caddy:/etc/caddy" caddy:2.8.4-alpine
           for i in $(seq 1 30); do ss -ltn | grep -q ':443 ' && break; sleep 1; done
+          ss -ltn | grep -q ':443 ' || { docker logs host-caddy; exit 1; }
       - name: The default installer refuses to take ports 80/443
         env:
           PICKUP_RAW_BASE: file://${{ github.workspace }}/deploy
@@ -292,7 +296,10 @@ jobs:
           docker restart host-caddy
           for i in $(seq 1 60); do curl -skf https://localhost/healthz >/dev/null && break; sleep 1; done
       - name: End-to-end through the existing Caddy
-        run: python3 -I tools/e2e.py --base https://localhost --insecure --password ci-proxy-password-123
+        run: |
+          python3 -I tools/e2e.py --base https://localhost --insecure --password ci-proxy-password-123
+          # The site that was already there keeps working.
+          curl -sk --resolve existing.localhost:443:127.0.0.1 https://existing.localhost/ | grep -q "existing site"
       - name: End-to-end through nginx with the generated snippet
         run: |
           printf 'server {\n  listen 8081;\n  server_name localhost;\n  include /etc/nginx/pickup.conf;\n}\n' > nginx-server.conf
