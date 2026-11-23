@@ -55,7 +55,7 @@
 - [x] 修复 `nginx.conf` 结构错误：`limit_*_zone`/`lua_package_path`/`init_by_lua_block` 移入 `http {}`；`http {}` 内的 `--` 注释改为 `#`；不存在的 `lua_thread_pool` 改为 main 段 `thread_pool`
 - [x] 补齐 `env` 声明（如 `IMAGE_ALLOW_ORIGINAL_FORMAT` 此前未声明，会被 nginx 隐藏）
 - [x] CI：syntax + luacheck + 旧名残留检查、busted、docker build + `openresty -t`、compose 冒烟
-- [ ] **CI 全绿**（见文末 CI 记录，逐项修复）
+- [x] **CI 全绿**（2026-11-23，第 10 次运行；过程见文末 CI 记录）
 
 ## Phase 2：数据模型
 
@@ -123,4 +123,30 @@
 
 ## CI 记录
 
-- （待首次运行）
+### 2026-11-23：从首次运行到全绿（共 10 轮）
+
+首次推送时四个 job 全红。之前的代码**从未真正构建或运行过**。逐轮修掉的问题：
+
+| 层面 | 问题 | 后果 |
+| --- | --- | --- |
+| 构建 | 精简版镜像里没有 `opm` | 镜像构建失败 |
+| 构建 | C 代码用了 `VIPS_FORMAT_uchar`、`struct flock`（缺头文件） | `image_vips.so` 编译失败 |
+| 构建 | C 代码调用了不存在的 `vips_tracked_set_limit` | 带 `-z now` 时 .so 加载失败 |
+| 构建 | 镜像里没有 `nginx` 用户；非 root 进程绑不了 80 端口 | 镜像构建失败或启动失败 |
+| 配置 | `limit_req_zone`/`lua_package_path`/`init_by_lua_block` 写在 `http {}` 外；`--` 注释；不存在的 `lua_thread_pool` | nginx 起不来 |
+| 运行时 | 按名字 `libsqlite3.so` 加载，运行时镜像只有 `.so.0` | 元数据层整体不可用 |
+| 运行时 | `SCHEMA_TUS`/`SCHEMA_STATS` 在定义前使用 | 断点续传和统计表从未创建 |
+| 运行时 | `name:secret:role` 三段式 key 解析失败 | 按文档配置的 key 一律 401 |
+| 运行时 | `run_worker_thread` 返回值取错 | 所有缩略图和格式转换都失败 |
+| 运行时 | 编码时对所有格式都传 `interlace` | WebP/AVIF 输出全部失败 |
+| 运行时 | 不指定 fmt 时输出格式为 nil | 普通缩放（curl、老浏览器）失败 |
+| 运行时 | `dict:used()` 不存在；`/sign` 无密钥时出现 nil 拼接；`/admin/analytics` 调用未定义函数 | 返回 500 |
+| 测试 | 冒烟测试用的 JPEG 本身是坏的；spec 里用了不存在的 `os.setenv`；断言的参数顺序不对 | 测试本身有错 |
+
+### CI 指出的下一步（按优先级）
+
+1. 启动日志里 GIF 编码器探测失败（`encoder unavailable: gif`），需要确认是 libvips/cgif 的问题还是探测图的问题。
+2. luacheck 暂时忽略了 unused 和 shadowing 类警告（约 30 处），属于技术债，可以分批清理后取消忽略。
+3. Actions 提示 Node 20 已弃用：把 `actions/checkout`、`docker/*` 升级到新的大版本。
+4. 断点续传（tus）还没有被冒烟测试覆盖，而它的表此前从未创建过。**Phase 3 之前先给 tus 补一个端到端用例。**
+5. 然后进入 Phase 2（数据模型），开工前需要先确定 D1–D3。
