@@ -9,7 +9,7 @@
 # Data lives in the named volumes below; see README for backups.
 services:
   pickup-box:
-    image: ghcr.io/awrhs/pickup-box:${PICKUP_VERSION:-latest}
+    image: ${PICKUP_IMAGE:-ghcr.io/awrhs/pickup-box}:${PICKUP_VERSION:-latest}
     restart: unless-stopped
     env_file: .env
     environment:
@@ -23,7 +23,7 @@ services:
       options: { max-size: "10m", max-file: "3" }
 
   caddy:
-    image: caddy:2.8.4-alpine
+    image: ${CADDY_IMAGE:-caddy:2.8.4-alpine}
     restart: unless-stopped
     depends_on:
       - pickup-box

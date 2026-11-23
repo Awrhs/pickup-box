@@ -49,6 +49,20 @@ docker compose up -d
 
 > 在中国大陆的服务器上使用域名需要先完成 ICP 备案；香港及海外服务器不需要。家里的宽带通常没有公网 IP、上行带宽也小，不太适合直接部署。
 
+### 常见问题
+
+- **打不开 / 证书错误**：先确认域名解析已生效（`ping 你的域名` 显示的是服务器 IP），并且云服务商的安全组放行了 80 和 443。Caddy 会自动重试申请证书，看进度用 `docker compose logs caddy`。
+- **端口被占用**（`address already in use`）：服务器上已有别的网站程序（nginx、宝塔等）占用了 80/443，需要先停掉，或改为由它反向代理到本服务。
+- **拉取镜像很慢或失败**（常见于中国大陆服务器）：在 `.env` 里改用镜像加速地址后重新 `docker compose up -d`：
+
+  ```bash
+  PICKUP_IMAGE=ghcr.nju.edu.cn/awrhs/pickup-box
+  CADDY_IMAGE=docker.m.daocloud.io/library/caddy:2.8.4-alpine
+  ```
+
+  一键脚本也支持：`curl … | PICKUP_IMAGE=… CADDY_IMAGE=… sh`。
+- **忘记上传密码**：在安装目录的 `.env` 里查看或修改 `PICKUP_PASSWORD`，然后 `docker compose up -d`。
+
 ## 配置
 
 所有配置都在 `.env` 文件里，修改后运行 `docker compose up -d` 生效。

@@ -8,8 +8,9 @@
 # the app plus Caddy (automatic HTTPS). Re-running keeps an existing .env.
 #
 # Environment overrides: PICKUP_DIR (install directory), PICKUP_DOMAIN,
-# PICKUP_PASSWORD, PICKUP_VERSION (image tag), PICKUP_RAW_BASE (where to
-# fetch docker-compose.yml and Caddyfile from).
+# PICKUP_PASSWORD, PICKUP_VERSION (image tag), PICKUP_IMAGE / CADDY_IMAGE
+# (registry mirrors), PICKUP_RAW_BASE (where to fetch docker-compose.yml and
+# Caddyfile from).
 set -eu
 
 DIR="${PICKUP_DIR:-$PWD/pickup-box}"
@@ -50,6 +51,8 @@ else
         echo "PICKUP_DOMAIN=$domain"
         echo "PICKUP_PASSWORD=$password"
         if [ -n "${PICKUP_VERSION:-}" ]; then echo "PICKUP_VERSION=$PICKUP_VERSION"; fi
+        if [ -n "${PICKUP_IMAGE:-}" ]; then echo "PICKUP_IMAGE=$PICKUP_IMAGE"; fi
+        if [ -n "${CADDY_IMAGE:-}" ]; then echo "CADDY_IMAGE=$CADDY_IMAGE"; fi
     } > .env
 fi
 

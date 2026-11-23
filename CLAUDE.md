@@ -39,5 +39,6 @@ No docker/luajit locally by default: **GitHub Actions is the test bed** (`.githu
 - **`ngx.exit` never returns**: release locks before calling helpers that respond (see `tus.complete`).
 - **DB**: `metadata.tx(fn)` re-raises fn errors unchanged (tables allowed); `db:run` raises on SQLite errors. Migrations are positional — append only.
 - **Randomness**: use `common.rand` (OpenSSL), never `math.random`, for slugs/codes/ids.
+- **Behind Caddy**: `TRUST_X_FORWARDED_FOR=true` makes `docker-entrypoint.sh` write `conf/realip.conf` (nginx realip from private ranges), so `limit_req`/`limit_conn` and `client_ip` see the real client. Never enable it when the app port is exposed directly.
 - **Timers** run on worker 0 only. Visit counting: page open without a valid token consumes a visit and redirects to `?t=`; bots (link previews) never consume.
 - Keep `PROGRESS.md` (task checklist) current; plan multi-file changes first; verify via CI.
