@@ -187,7 +187,7 @@ class T:
         st, _, _ = self.c.req("GET", "/__blob/images.db")
         check("internal blob location hidden", st == 404)
         st, _, _ = self.c.req("GET", "/p/../../etc/passwd")
-        check("path traversal rejected", st in (400, 404))
+        check("path traversal rejected", st in (400, 403, 404))
 
     def auth_tests(self):
         print("== auth")
@@ -223,13 +223,16 @@ class T:
         time.sleep(0.5)
         s.close()
         offset = 0
-        for _ in range(40):
+        for _ in range(10 if self.args.proxy_buffered else 40):
             st, hd, _ = self.c.req("HEAD", url, headers=dict(self.auth(), **{"Tus-Resumable": "1.0.0"}))
             offset = int(hd.get("upload-offset", "0"))
             if offset > 0:
                 break
             time.sleep(0.5)
-        check("interrupted PATCH keeps received bytes", 0 < offset <= half, f"offset={offset}")
+        if offset == 0 and self.args.proxy_buffered:
+            print("  skip interrupted PATCH (the CDN in front buffers request bodies)")
+        else:
+            check("interrupted PATCH keeps received bytes", 0 < offset <= half, f"offset={offset}")
         off = offset
         while off < len(blob):
             part = blob[off:off + 1024 * 1024]
@@ -475,6 +478,8 @@ def main():
     p.add_argument("--short-expiry", action="store_true")
     p.add_argument("--gc", action="store_true")
     p.add_argument("--destructive", action="store_true")
+    p.add_argument("--proxy-buffered", action="store_true",
+                   help="a CDN in front buffers request bodies (partial uploads never reach the server)")
     p.add_argument("--only", help="comma separated groups: basics,auth,uploads,shares,visits,lifecycle,gc")
     args = p.parse_args()
     t = T(args)

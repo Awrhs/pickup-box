@@ -1,0 +1,166 @@
+name: Public demo
+
+# Deploys pickup-box exactly like a self-hoster would (published image,
+# deploy/install.sh, only environment variables) on a GitHub runner, puts it
+# on the public internet through a Cloudflare quick tunnel (free, no account),
+# tests it through that public hostname, proves the deploy Caddyfile obtains a
+# real Let's Encrypt certificate for a public hostname, and then stays online
+# for a while so people (and external checkers) can use it.
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Minutes to stay online after the checks
+        default: "30"
+      version:
+        description: Image tag on ghcr.io
+        default: latest
+
+permissions:
+  contents: read
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      PICKUP_DIR: ${{ github.workspace }}/../pb
+      PICKUP_PASSWORD: ${{ secrets.DEMO_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get cloudflared
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cloudflared" \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x "$RUNNER_TEMP/cloudflared"
+          "$RUNNER_TEMP/cloudflared" --version
+
+      - name: Open a public tunnel to port 80
+        run: |
+          nohup "$RUNNER_TEMP/cloudflared" tunnel --no-autoupdate --url http://localhost:80 \
+            > "$RUNNER_TEMP/tunnel.log" 2>&1 &
+          for i in $(seq 1 90); do
+            url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/tunnel.log" | head -n 1)
+            [ -n "$url" ] && break; sleep 1
+          done
+          test -n "$url" || { cat "$RUNNER_TEMP/tunnel.log"; exit 1; }
+          echo "PUBLIC_URL=$url" >> "$GITHUB_ENV"
+          echo "public URL: $url"
+
+      - name: Install from ghcr.io with deploy/install.sh (environment variables only)
+        env:
+          PICKUP_RAW_BASE: file://${{ github.workspace }}/deploy
+          PICKUP_DOMAIN: ""
+          PICKUP_VERSION: ${{ inputs.version }}
+        run: |
+          sh deploy/install.sh < /dev/null
+          # Share links should use the public hostname.
+          echo "PICKUP_PUBLIC_URL=$PUBLIC_URL" >> "$PICKUP_DIR/.env"
+          cd "$PICKUP_DIR" && docker compose up -d
+
+      - name: Wait until it answers on the public hostname
+        run: |
+          for i in $(seq 1 90); do curl -sf "$PUBLIC_URL/healthz" && break; sleep 2; done
+          echo; curl -sf "$PUBLIC_URL/readyz"; echo
+
+      - name: Publish the URL for external checkers
+        run: echo "$PUBLIC_URL" > public-url.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: public-url
+          path: public-url.txt
+
+      - name: End-to-end through the public hostname (publicly trusted TLS)
+        run: python3 -I tools/e2e.py --base "$PUBLIC_URL" --password "$PICKUP_PASSWORD" --proxy-buffered
+
+      - name: Real browsers through the public hostname
+        run: |
+          mkdir -p browser-shots
+          for engine in chromium webkit; do
+            docker run --rm -e PUBLIC_URL -e PICKUP_PASSWORD -v "$PWD":/w -w /w \
+              mcr.microsoft.com/playwright/python:v1.48.0-noble sh -euc "
+                python -m pip install -q --break-system-packages playwright==1.48.0
+                python tools/browser_test.py --base \"\$PUBLIC_URL\" --password \"\$PICKUP_PASSWORD\" \
+                  --shots browser-shots/$engine --browser $engine"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-browser-shots
+          path: browser-shots/
+
+      - name: A sample share anyone can open
+        run: |
+          python3 -I - <<'PY' > sample.json
+          import json, os, sys
+          sys.path.insert(0, "tools")
+          import e2e, argparse
+          t = e2e.T(argparse.Namespace(base=os.environ["PUBLIC_URL"], insecure=False,
+                    password=os.environ["PICKUP_PASSWORD"], friend=None, short_expiry=False,
+                    gc=False, destructive=False, proxy_buffered=True))
+          h1, _, _ = t.tus_upload(e2e.png_bytes(w=320, h=200, seed=3), "示例图片.png")
+          h2, _, _ = t.tus_upload("这是 pickup-box 公网演示的示例文件。\n".encode(), "说明.txt")
+          st, s = t.share([(h1, "示例图片.png"), (h2, "说明.txt")], expires_in=6 * 3600, title="pickup-box 公网演示")
+          assert st == 201, (st, s)
+          print(json.dumps({"url": s["url"], "code": s["code"]}))
+          PY
+          cat sample.json
+          {
+            echo "## pickup-box public demo"
+            echo
+            echo "- Site: $PUBLIC_URL"
+            echo "- Sample share: $(python3 -c 'import json;print(json.load(open("sample.json"))["url"])')"
+            echo "- Pickup code: $(python3 -c 'import json;print(json.load(open("sample.json"))["code"])')"
+            echo "- Online for about ${{ inputs.minutes }} minutes after this step."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sample-share
+          path: sample.json
+
+      - name: Let's Encrypt certificate via the deploy Caddyfile (second public hostname)
+        run: |
+          # A second quick tunnel gives another public hostname; Let's Encrypt
+          # validates it over HTTP through the tunnel, exactly as on a server
+          # whose DNS points at it. Caddy runs the unmodified deploy/Caddyfile.
+          nohup "$RUNNER_TEMP/cloudflared" tunnel --no-autoupdate --url http://localhost:8080 \
+            > "$RUNNER_TEMP/tunnel2.log" 2>&1 &
+          for i in $(seq 1 90); do
+            host=$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/tunnel2.log" | head -n 1)
+            [ -n "$host" ] && break; sleep 1
+          done
+          test -n "$host"
+          for i in $(seq 1 60); do getent hosts "$host" >/dev/null && break; sleep 2; done
+          echo "second hostname: $host"
+          network=$(docker network ls --format '{{.Name}}' | grep '_default$' | head -n 1)
+          docker run -d --name caddy-le --network "$network" -p 8080:80 -p 8443:443 \
+            -e PICKUP_SITE_ADDRESS="$host" \
+            -v "$PICKUP_DIR/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.8.4-alpine
+          ok=""
+          for i in $(seq 1 90); do
+            if docker logs caddy-le 2>&1 | grep -q 'certificate obtained successfully'; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs caddy-le 2>&1 | grep -E 'certificate obtained|obtaining certificate|"error"' | tail -n 20 || true
+          test -n "$ok"
+          echo | openssl s_client -connect 127.0.0.1:8443 -servername "$host" 2>/dev/null \
+            | openssl x509 -noout -issuer -subject -dates
+          # The app over that certificate, with full verification against the
+          # system trust store:
+          curl -sf --resolve "$host:8443:127.0.0.1" "https://$host:8443/healthz"; echo
+          curl -sf --resolve "$host:8443:127.0.0.1" "https://$host:8443/" | grep -q "取件"
+          echo "Let's Encrypt certificate obtained and served for $host" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stay online
+        run: |
+          end=$(( $(date +%s) + ${{ inputs.minutes }} * 60 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL/healthz")
+            echo "$(date -u +%H:%M:%S) healthz=$code"
+            sleep 60
+          done
+
+      - name: Server logs
+        if: always()
+        run: cd "$PICKUP_DIR" && docker compose logs --tail=200

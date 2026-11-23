@@ -27,7 +27,8 @@ def main():
     args = ap.parse_args()
 
     t = e2e.T(argparse.Namespace(base=args.base, insecure=args.insecure, password=args.password,
-                                 friend=None, short_expiry=False, gc=False, destructive=False))
+                                 friend=None, short_expiry=False, gc=False, destructive=False,
+                                 proxy_buffered=False))
     problems = []
 
     # 1. Parallel uploads: mixed sizes, chunked, some sharing identical content.
