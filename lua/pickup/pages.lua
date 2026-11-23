@@ -119,7 +119,7 @@ function _M.index(err_msg)
         '<div id="result" hidden></div>',
         '</section>',
     })
-    return send(err_msg and 404 or 200, layout(pconfig.site_name, body, { scripts = { "/static/common.js?v=1", "/static/app.js?v=1" } }))
+    return send(err_msg and 404 or 200, layout(pconfig.site_name, body, { scripts = { "/static/common.js?v=1", "/static/app.js?v=2" } }))
 end
 
 -- GET /c?code=123456 and /c/123456

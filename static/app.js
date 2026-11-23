@@ -95,7 +95,12 @@
     return h;
   }
 
-  function createUpload(file) {
+  // Transient failures (rate limiting, server restart, flaky network) are
+  // retried with backoff; anything else is reported to the user.
+  function retryable(status) { return status === 0 || status === 429 || status >= 500 && status !== 507; }
+
+  function createUpload(file, attempt) {
+    attempt = attempt || 0;
     return fetch('/files/', { method: 'POST', headers: tusHeaders({
       'Upload-Length': String(file.size),
       'Upload-Metadata': 'filename ' + b64(file.name) + ',filetype ' + b64(file.type || '')
@@ -104,6 +109,13 @@
         return { url: r.headers.get('Location'), hash: r.headers.get('X-Blob-Hash') };
       }
       return r.text().then(function (t) { throw httpError(r.status, t); });
+    }, function () { throw httpError(0, '网络错误'); }).catch(function (err) {
+      if (retryable(err.status) && attempt < 8) {
+        return sleep(Math.min(30000, 1000 * Math.pow(2, attempt))).then(function () {
+          return createUpload(file, attempt + 1);
+        });
+      }
+      throw err;
     });
   }
 
@@ -167,8 +179,9 @@
             if (r.hash) return r.hash;
             return loop(0);
           }
-          if (r.status === 413 || r.status === 507 || r.status === 401 || r.status === 410) {
-            if (r.status === 410) store(key, null);
+          if (r.status === 413 || r.status === 507 || r.status === 401 || r.status === 410 || r.status === 404) {
+            // The upload session is gone (expired/failed): start over next time.
+            if (r.status === 410 || r.status === 404) store(key, null);
             throw httpError(r.status, r.text);
           }
           // Network error, conflict or server hiccup: wait, resync, retry.
@@ -226,12 +239,24 @@
     }
     next().then(function () {
       startBtn.textContent = '正在生成分享…';
-      return PB.api('POST', '/api/shares', {
+      var payload = {
         files: queue.map(function (q) { return { hash: q.hash, name: q.file.name }; }),
         expires_in: Number(expirySel.value),
         max_visits: Number($('visits').value),
         title: $('title').value
-      });
+      };
+      function post(attempt) {
+        return PB.api('POST', '/api/shares', payload).then(function (r) {
+          if (retryable(r.status) && attempt < 5) {
+            return sleep(1000 * Math.pow(2, attempt)).then(function () { return post(attempt + 1); });
+          }
+          return r;
+        }, function () {
+          if (attempt < 5) return sleep(1000 * Math.pow(2, attempt)).then(function () { return post(attempt + 1); });
+          throw httpError(0, '网络错误，请重试');
+        });
+      }
+      return post(0);
     }).then(function (r) {
       if (!r.ok) throw httpError(r.status, (r.data && r.data.message) || '创建分享失败');
       busy = false; unlockScreen();

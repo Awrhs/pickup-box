@@ -35,6 +35,7 @@ def main():
     ap.add_argument("--base", default="http://127.0.0.1")
     ap.add_argument("--password", required=True)
     ap.add_argument("--shots", default="browser-shots")
+    ap.add_argument("--browser", default="chromium", choices=["chromium", "webkit"])
     args = ap.parse_args()
     os.makedirs(args.shots, exist_ok=True)
 
@@ -49,7 +50,7 @@ def main():
         f.write(os.urandom(9 * 1024 * 1024 + 4321))
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = getattr(p, args.browser).launch()
         sender_ctx = browser.new_context(**p.devices["iPhone 13"], accept_downloads=True)
         page = sender_ctx.new_page()
         errors = []
