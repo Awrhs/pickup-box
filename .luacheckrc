@@ -17,5 +17,8 @@ max_line_length = 120
 ignore = {
     "631",                      -- line too long
     "211", "212", "213", "311", -- unused variable / argument / loop var / value
-    "421", "431",               -- shadowing
+    "411", "421", "431",        -- redefinition / shadowing
 }
+
+-- ngx.run_worker_thread postdates luacheck's ngx_lua std.
+files["lua/image/processing.lua"] = { ignore = { "143" } }

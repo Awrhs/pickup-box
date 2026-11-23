@@ -139,15 +139,15 @@ static VipsImage *iv_to_srgb(VipsImage *src, gboolean with_alpha) {
     }
 
     /* Cast 16-bit HDR down to 8-bit after colourspace conversion. */
-    if (rgb->BandFmt != VIPS_FORMAT_USHORT && rgb->BandFmt != VIPS_FORMAT_uchar) {
+    if (rgb->BandFmt != VIPS_FORMAT_USHORT && rgb->BandFmt != VIPS_FORMAT_UCHAR) {
         VipsImage *cast = NULL;
-        if (vips_cast(rgb, &cast, VIPS_FORMAT_uchar, NULL) == 0) {
+        if (vips_cast(rgb, &cast, VIPS_FORMAT_UCHAR, NULL) == 0) {
             g_object_unref(rgb);
             rgb = cast;
         }
     } else if (rgb->BandFmt == VIPS_FORMAT_USHORT) {
         VipsImage *cast = NULL;
-        if (vips_cast(rgb, &cast, VIPS_FORMAT_uchar, NULL) == 0) {
+        if (vips_cast(rgb, &cast, VIPS_FORMAT_UCHAR, NULL) == 0) {
             g_object_unref(rgb);
             rgb = cast;
         }
@@ -621,7 +621,7 @@ int iv_probe_encode(const char *target_suffix) {
     if (!target_suffix) return 0;
     /* Build a tiny 1x1 black image in memory and try to encode. */
     VipsImage *test = vips_image_new_from_memory(
-            (unsigned char[3]){0,0,0}, 3, 1, 1, 3, VIPS_FORMAT_uchar);
+            (unsigned char[3]){0,0,0}, 3, 1, 1, 3, VIPS_FORMAT_UCHAR);
     if (!test) return 0;
     void *buf = NULL;
     size_t len = 0;
@@ -707,8 +707,6 @@ static int iv_collect_cache(const char *root,
     while ((shard = g_dir_read_name(root_dir)) != NULL) {
         char *shard_path = g_build_filename(root, shard, NULL);
         if (g_file_test(shard_path, G_FILE_TEST_IS_DIR)) {
-            struct flock st;
-            (void)st;
             struct stat stb;
             /* Check for two-level shard layout: try <shard>/<sub> */
             GDir *sub_dir = g_dir_open(shard_path, 0, NULL);

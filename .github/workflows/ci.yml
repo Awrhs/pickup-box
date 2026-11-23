@@ -40,14 +40,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: leafo/gh-actions-lua@v11
-        with:
-          luaVersion: "luajit-openresty"
-      - uses: leafo/gh-actions-luarocks@v4
-      - name: Install busted
-        run: luarocks install busted
-      - name: Run specs
-        run: busted --lpath='lua/?.lua' spec/unit
+      - name: Install luajit + busted (Ubuntu packages; LuaJIT loads Lua 5.1 modules)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit lua-busted
+      - name: Run specs under LuaJIT
+        run: luajit -e 'package.path="lua/?.lua;"..package.path' "$(command -v busted)" spec/unit
 
   docker:
     name: Build image + nginx -t
