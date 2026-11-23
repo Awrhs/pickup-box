@@ -25,7 +25,7 @@ _M.config = {
     require_strong_secret = bool(os.getenv("IMAGE_REQUIRE_STRONG_SECRET"), false),
     -- Allow ?api_key= on query string (default true for backwards compat;
     -- set to false to force Authorization header only).
-    allow_query_key      = bool(os.getenv("IMAGE_ALLOW_QUERY_KEY"), true),
+    allow_query_key      = bool(os.getenv("IMAGE_ALLOW_QUERY_KEY"), false),
     -- CORS origin for /upload and /i/*: "*" or a specific origin. Empty
     -- (default) means no CORS headers (same-origin only).
     cors_origin          = os.getenv("IMAGE_CORS_ORIGIN") or "",

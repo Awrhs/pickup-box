@@ -66,7 +66,10 @@ end
 local cache_key = util.cache_key
 
 local function set_cache_headers(immutable, vary_accept)
-    if immutable then
+    if ngx.ctx.pb_private_cache then
+        -- Share previews: never let shared caches keep them past revocation.
+        ngx.header["Cache-Control"] = "private, max-age=3600"
+    elseif immutable then
         ngx.header["Cache-Control"] = "public, max-age=" .. config.cache_seconds .. ", immutable"
     else
         ngx.header["Cache-Control"] = "public, max-age=300"
@@ -165,14 +168,16 @@ local function record_bytes(n)
     if n and n > 0 then ngx.ctx.image_bytes = n end
 end
 
--- Stream a file path back through nginx (sendfile).
+-- Stream a file path back through nginx (sendfile, Range support) via an
+-- internal redirect to the internal blob location. Headers set here survive
+-- the redirect. (X-Accel-Redirect is only honoured for proxied upstream
+-- responses, not for content_by_lua, hence ngx.exec.)
 local function stream_file(path, mime, immutable, vary_accept, etag, size)
     ngx.header["Content-Type"] = mime
     set_cache_headers(immutable, vary_accept)
     if etag then ngx.header["ETag"] = etag end
     record_bytes(size or storage.size(path) or 0)
-    ngx.header["X-Accel-Redirect"] = storage.to_internal_uri(path)
-    ngx.exit(ngx.OK)
+    return ngx.exec(storage.to_internal_uri(path))
 end
 
 -- Serve encoded bytes straight from memory.
@@ -271,7 +276,9 @@ local function build_opts(params, out_fmt)
     }
 end
 
-function _M.serve(hash, requested_ext)
+-- `params_override` (optional) replaces the query-string transform params;
+-- pickup-box uses it to allow only fixed preview sizes.
+function _M.serve(hash, requested_ext, params_override)
     local metadata = require "image.metadata"
     -- trace_id is initialized at the server rewrite phase; just make sure.
     if not ngx.ctx.trace_id then
@@ -279,9 +286,6 @@ function _M.serve(hash, requested_ext)
     end
     local meta = metadata.get_image(hash)
     if not meta then util.not_found("image not found") end
-    -- Stash the hash on ctx so log_by_lua (download_guard.meter) can
-    -- record per-image counters for the analytics page (P4).
-    ngx.ctx.image_hash = hash
 
     -- Resolve the original on local disk (stat only).
     local orig_path = storage.ensure_local_orig(hash, meta.orig_ext)
@@ -299,7 +303,8 @@ function _M.serve(hash, requested_ext)
     -- serve the original bytes rather than producing a silently de-animated
     -- thumbnail, and signal the fact with X-Image-Animated: 1.
 
-    local params, perr = util.parse_transform_args()
+    local params, perr = params_override, nil
+    if not params then params, perr = util.parse_transform_args() end
     if not params then util.bad_request(perr) end
 
     -- HEAD must never trigger expensive processing. Serve from cache only,
@@ -467,7 +472,7 @@ function _M.serve(hash, requested_ext)
     end
 
     if elapsed then lock:unlock() end
-    maybe_download_header(hash, out_ext)
+    if not params_override then maybe_download_header(hash, out_ext) end
     stream_file(cached_path, out_mime, true, negotiated, etag)
 end
 

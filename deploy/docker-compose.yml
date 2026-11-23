@@ -1,0 +1,47 @@
+# pickup-box on a public server: the app plus Caddy for automatic HTTPS.
+#
+#   1. Point a DNS A/AAAA record for your domain at this server; open ports
+#      80 and 443.
+#   2. Put this file, Caddyfile and .env (from .env.example) in one folder and
+#      set PICKUP_DOMAIN and PICKUP_PASSWORD in .env.
+#   3. docker compose up -d
+#
+# Data lives in the named volumes below; see README for backups.
+services:
+  pickup-box:
+    image: ghcr.io/awrhs/pickup-box:${PICKUP_VERSION:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Only Caddy can reach this container, so its X-Forwarded-For is trusted.
+      TRUST_X_FORWARDED_FOR: "true"
+      IMAGE_TRUSTED_PROXY_HOPS: "1"
+    volumes:
+      - pickup-data:/data
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  caddy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    depends_on:
+      - pickup-box
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PICKUP_DOMAIN: ${PICKUP_DOMAIN:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  pickup-data:
+  caddy-data:
+  caddy-config:

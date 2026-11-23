@@ -1,323 +1,322 @@
--- tus 1.0 protocol handler for resumable chunked uploads.
+-- tus 1.0 resumable uploads (core protocol + creation, expiration,
+-- termination and checksum extensions) for large files over flaky links.
 --
--- Implements the core protocol (creation, HEAD, PATCH, DELETE, OPTIONS,
--- expiration) and the checksum extension (sha1/sha256 when available).
--- The creation-with-upload extension is NOT implemented (chunked uploads
--- use creation then PATCH).
---
--- Session state lives in the metadata store (tus_sessions table) and chunk
--- data is appended to local part files. Multi-node P8 extends this with
--- per-node part objects in shared storage for PATCHes hitting non-owning
--- nodes.
---
--- On completion, the assembled file is handed to upload.finalize() which
--- runs the same validation/place/insert pipeline as the multipart path.
+-- PATCH bodies are streamed from the client socket straight into the
+-- session's part file, so memory use is constant and a dropped connection
+-- keeps whatever already arrived: the client asks HEAD for the offset and
+-- continues from there. When the last byte lands the part file becomes a
+-- blob via upload.store() and the response carries X-Blob-* headers.
 local config = require "image.config"
-local util = require "image.util"
-local storage = require "image.storage"
 local metadata = require "image.metadata"
 local apikey = require "image.apikey"
 local fs = require "image.fs_ffi"
-local security = require "image.security"
+local upload = require "image.upload"
+local rand = require "common.rand"
 local logger = require "common.logger"
+local pconfig = require "pickup.config"
 local ngx = ngx
 
 local _M = {}
 
-local TUS_EXTENSIONS = "creation,creation-with-upload,expiration,termination,checksum"
+local EXTENSIONS = "creation,expiration,termination,checksum"
+local READ_CHUNK = 64 * 1024
+local SOCKET_TIMEOUT = 60000
+local MAX_CHUNK = tonumber(os.getenv("IMAGE_TUS_MAX_CHUNK")) or (64 * 1024 * 1024)
+local SESSION_TTL = tonumber(os.getenv("IMAGE_TUS_EXPIRY")) or 86400
 
--- Optional checksum algorithms. resty.sha1 is bundled with OpenResty but
--- may be absent in minimal builds; if it's missing we omit the extension.
-local checksum_algorithms = "sha256"
-pcall(function()
-    require "resty.sha1"
-    checksum_algorithms = "sha1,sha256"
-end)
-
--- ---- helpers ----
-
-local function random_id()
-    -- 32 hex characters from getrandom (same source as security.csp_nonce).
-    return security.csp_nonce()
+local function part_path(id)
+    return config.tmp_dir .. "/tus-" .. id .. ".part"
 end
 
-local function respond_405()
-    ngx.status = 405; ngx.header.content_type = "text/plain"
-    ngx.say("405 Not Allowed"); ngx.exit(405)
-end
-
--- ---- OPTIONS ----
-function _M.options()
-    ngx.status = 204
+local function common_headers()
     ngx.header["Tus-Resumable"] = "1.0.0"
-    ngx.header["Tus-Version"] = "1.0.0"
-    ngx.header["Tus-Max-Size"] = tostring(config.max_upload_bytes)
-    ngx.header["Tus-Extension"] = TUS_EXTENSIONS
-    ngx.header["Tus-Checksum-Algorithm"] = checksum_algorithms
-    ngx.exit(204)
+    ngx.header["Cache-Control"] = "no-store"
 end
 
--- ---- POST /files/ (create) ----
-function _M.create()
-    local subject = apikey.require()
-
-    local upload_length = tonumber(ngx.var.http_upload_length)
-    if not upload_length or upload_length <= 0 then
-        -- tus 1.0 requires Upload-Length; creation-with-upload may omit
-        -- but we do not support that extension.
-        ngx.status = 400; ngx.header.content_type = "text/plain"
-        ngx.say("400 Upload-Length required"); ngx.exit(400)
+local function finish(status, msg)
+    common_headers()
+    ngx.status = status
+    if msg then
+        ngx.header.content_type = "text/plain; charset=utf-8"
+        ngx.say(msg)
     end
-    if upload_length > config.max_upload_bytes then
-        ngx.status = 413; ngx.header.content_type = "text/plain"
-        ngx.say("413 Payload Too Large"); ngx.exit(413)
-    end
+    return ngx.exit(status)
+end
 
-    -- Parse Upload-Metadata (comma-separated k=v base64).
-    local meta_raw = ngx.var.http_upload_metadata or ""
+local function blob_headers(hash)
+    local blob = metadata.get_image(hash)
+    if not blob then return end
+    ngx.header["X-Blob-Hash"] = blob.hash
+    ngx.header["X-Blob-Kind"] = blob.kind or "other"
+    ngx.header["X-Blob-Size"] = tostring(blob.size_bytes)
+end
+
+-- Upload-Metadata: "key base64value,key2 base64value2"
+function _M.parse_metadata(raw)
     local meta = {}
-    for token in string.gmatch(meta_raw, "[^,]+") do
-        local k, v64 = token:match("^%s*(.-)%s+(.-)%s*$")
-        if not k then k = token; v64 = "" end
-        k = k:lower()
-        -- tus spec: values are base64-encoded; decode them.
-        if v64 and v64 ~= "" then
-            local ngx_base64 = require "ngx.base64"
-            local ok, decoded = pcall(ngx_base64.decode_base64url, v64)
-            if ok and decoded then
-                meta[k] = decoded
-            end
+    for token in string.gmatch(raw or "", "[^,]+") do
+        local k, v = token:match("^%s*(%S+)%s*(%S*)%s*$")
+        if k then
+            local decoded = v ~= "" and (ngx.decode_base64(v) or require("ngx.base64").decode_base64url(v)) or ""
+            meta[k:lower()] = decoded
         end
     end
+    return meta
+end
 
-    local session_id = random_id()
-    local now = ngx.time()
-    local expires = now + tonumber(os.getenv("IMAGE_TUS_EXPIRY")) or 86400
+-- Load a session and check it belongs to the caller (admins see all).
+local function owned_session(id, subject)
+    local session = metadata.tus_session_get(id)
+    if not session then return finish(404, "upload not found") end
+    if subject.role ~= "admin" and session.owner ~= subject.hash then
+        return finish(404, "upload not found")
+    end
+    return session
+end
 
-    -- Create the part file path (empty initial file).
-    local part_path = config.tmp_dir .. "/tus-" .. session_id .. ".part"
-    local fd, ferr = fs.open_write_excl(part_path)
+-- Turn the finished part file into a blob and answer the final request.
+-- `lock` (if any) is released before responding: ngx.exit never returns.
+local function complete(id, session, subject, status_on_success, lock)
+    local blob, code, status = upload.store(part_path(id), subject)
+    if not blob then
+        metadata.tus_session_set_state(id, "error")
+        if lock then lock:unlock() end
+        logger.warn("tus_finalize_failed", { sid = id, error = code })
+        return finish(status or 500, code)
+    end
+    metadata.tus_session_done(id, blob.hash)
+    if lock then lock:unlock() end
+    ngx.header["Upload-Offset"] = tostring(session.upload_length)
+    ngx.header["X-Blob-Hash"] = blob.hash
+    ngx.header["X-Blob-Kind"] = blob.kind
+    ngx.header["X-Blob-Size"] = tostring(blob.size)
+    return finish(status_on_success)
+end
+
+function _M.options()
+    ngx.header["Tus-Version"] = "1.0.0"
+    ngx.header["Tus-Max-Size"] = tostring(pconfig.max_file_bytes)
+    ngx.header["Tus-Extension"] = EXTENSIONS
+    ngx.header["Tus-Checksum-Algorithm"] = "sha1,sha256"
+    return finish(204)
+end
+
+-- POST /files/
+function _M.create()
+    local subject = apikey.require()
+    if not require("common.rate_limit").check_upload_limit(subject.hash) then
+        return finish(429, "too many uploads, slow down")
+    end
+    if ngx.var.http_upload_defer_length then
+        return finish(400, "Upload-Defer-Length is not supported")
+    end
+    local length = tonumber(ngx.var.http_upload_length)
+    if not length or length < 0 or length ~= math.floor(length) then
+        return finish(400, "Upload-Length required")
+    end
+    if length > pconfig.max_file_bytes then
+        return finish(413, "file larger than PICKUP_MAX_FILE_SIZE")
+    end
+    if not upload.disk_has_room(length) then
+        return finish(507, "server storage is full")
+    end
+    local left = upload.quota_left(subject)
+    if left and length > left then
+        return finish(413, "upload quota exceeded")
+    end
+
+    local id = rand.hex(16)
+    local fd, ferr = fs.open_write_excl(part_path(id))
     if not fd then
-        logger.err("tus_create_fd_failed", { error = tostring(ferr) })
-        ngx.status = 500; ngx.exit(500)
+        logger.err("tus_create_failed", { error = tostring(ferr) })
+        return finish(500, "cannot create upload")
     end
     fs.close(fd)
 
-    local ok, err = metadata.tus_session_create(session_id, upload_length, meta,
-                                                  subject.hash, "", now, expires)
+    local now = ngx.time()
+    local expires = now + SESSION_TTL
+    local ok, err = metadata.tus_session_create(id, length, ngx.var.http_upload_metadata or "",
+                                                subject.hash, "", now, expires)
     if not ok then
-        pcall(fs.unlink, part_path)
+        fs.unlink(part_path(id))
         logger.err("tus_create_db_failed", { error = tostring(err) })
-        ngx.status = 500; ngx.exit(500)
+        return finish(500, "cannot create upload")
     end
 
-    ngx.status = 201
-    ngx.header["Location"] = "/files/" .. session_id
-    ngx.header["Upload-Expires"] = os.date("!%Y-%m-%dT%H:%M:%SZ", expires)
-    ngx.exit(201)
+    ngx.header["Location"] = "/files/" .. id
+    ngx.header["Upload-Expires"] = ngx.http_time(expires)
+    if length == 0 then
+        local session = metadata.tus_session_get(id)
+        return complete(id, session, subject, 201)
+    end
+    return finish(201)
 end
 
--- ---- HEAD /files/{id} ----
-function _M.head(session_id)
-    local session = metadata.tus_session_get(session_id)
-    if not session then
-        ngx.status = 404; ngx.exit(404)
-    end
-
-    -- Auth: owner or admin.
+-- HEAD /files/{id}
+function _M.head(id)
     local subject = apikey.require()
-    if subject.role ~= "admin" and session.owner ~= subject.hash then
-        ngx.status = 403; ngx.exit(403)
-    end
-
-    ngx.header["Upload-Offset"] = tostring(session.offset)
+    local session = owned_session(id, subject)
+    if session.state == "error" then return finish(410) end
     ngx.header["Upload-Length"] = tostring(session.upload_length)
+    ngx.header["Upload-Expires"] = ngx.http_time(session.expires_at)
     if session.metadata and session.metadata ~= "" then
         ngx.header["Upload-Metadata"] = session.metadata
     end
-    ngx.header["Upload-Expires"] = os.date("!%Y-%m-%dT%H:%M:%SZ", session.expires_at)
-    ngx.header["Cache-Control"] = "no-store"
-    ngx.status = 200; ngx.exit(200)
+    if session.state == "done" and session.blob_hash then
+        ngx.header["Upload-Offset"] = tostring(session.upload_length)
+        blob_headers(session.blob_hash)
+    else
+        ngx.header["Upload-Offset"] = tostring(session.offset)
+    end
+    return finish(200)
 end
 
--- ---- PATCH /files/{id} ----
-function _M.patch(session_id, body)
-    local session = metadata.tus_session_get(session_id)
-    if not session then
-        ngx.status = 404; ngx.exit(404)
-    end
-    if session.state ~= "active" then
-        ngx.status = 410; ngx.exit(410)
-    end
-
-    -- Auth: owner or admin.
+-- PATCH /files/{id}
+function _M.patch(id)
     local subject = apikey.require()
-    if subject.role ~= "admin" and session.owner ~= subject.hash then
-        ngx.status = 403; ngx.exit(403)
+    local session = owned_session(id, subject)
+    if session.state == "done" then
+        ngx.header["Upload-Offset"] = tostring(session.upload_length)
+        if session.blob_hash then blob_headers(session.blob_hash) end
+        return finish(204)
+    end
+    if session.state ~= "active" then return finish(410, "upload failed, start again") end
+    if session.expires_at <= ngx.time() then return finish(410, "upload expired") end
+
+    if (ngx.var.http_content_type or ""):lower() ~= "application/offset+octet-stream" then
+        return finish(415, "Content-Type must be application/offset+octet-stream")
+    end
+    local body_len = tonumber(ngx.var.http_content_length)
+    if not body_len then return finish(411, "Content-Length required") end
+    if body_len > MAX_CHUNK then return finish(413, "chunk too large") end
+
+    -- One PATCH per session at a time.
+    local lock = require("resty.lock"):new("pickup_locks", { timeout = 0, exptime = 600 })
+    if not lock:lock("tus:" .. id) then return finish(409, "upload busy") end
+    session = metadata.tus_session_get(id)  -- re-read under the lock
+
+    local offset = tonumber(ngx.var.http_upload_offset)
+    if not offset or offset ~= session.offset then
+        lock:unlock()
+        ngx.header["Upload-Offset"] = tostring(session.offset)
+        return finish(409, "offset mismatch")
+    end
+    if offset + body_len > session.upload_length then
+        lock:unlock()
+        return finish(400, "chunk exceeds Upload-Length")
     end
 
-    -- Validate Content-Type.
-    local ct = ngx.var.http_content_type or ""
-    if ct:lower() ~= "application/offset+octet-stream" then
-        ngx.status = 415; ngx.header.content_type = "text/plain"
-        ngx.say("415 unsupported media type (expected application/offset+octet-stream)")
-        ngx.exit(415)
-    end
-
-    -- Validate Upload-Offset matches session offset.
-    local upload_offset = tonumber(ngx.var.http_upload_offset)
-    if not upload_offset or upload_offset ~= session.offset then
-        ngx.status = 409; ngx.header.content_type = "text/plain"
-        ngx.say("409 Conflict: offset mismatch")
-        ngx.exit(409)
-    end
-
-    -- Limit per-chunk body size.
-    local body_bytes = ngx.var.content_length or 0
-    local max_chunk = tonumber(os.getenv("IMAGE_TUS_MAX_CHUNK")) or (8 * 1024 * 1024)
-    if tonumber(body_bytes) > max_chunk then
-        ngx.status = 413; ngx.exit(413)
-    end
-
-    -- Append the chunk to the session's part file.
-    local part_path = config.tmp_dir .. "/tus-" .. session_id .. ".part"
-    local fd, ferr = fs.open_append(part_path)
+    local fd, oerr = fs.open_append(part_path(id))
     if not fd then
-        logger.err("tus_patch_open_failed", { sid = session_id, error = tostring(ferr) })
-        ngx.status = 500; ngx.exit(500)
+        lock:unlock()
+        logger.err("tus_open_failed", { sid = id, error = tostring(oerr) })
+        return finish(500, "storage error")
+    end
+    -- A crash between write and DB update can leave extra bytes; the DB
+    -- offset is authoritative.
+    fs.ftruncate(fd, offset)
+
+    local hasher, alg, expected
+    local checksum = ngx.var.http_upload_checksum
+    if checksum and checksum ~= "" then
+        local a, b64 = checksum:match("^(%w+)%s+(%S+)$")
+        expected = b64 and ngx.decode_base64(b64)
+        if a == "sha256" then hasher = require("resty.sha256"):new()
+        elseif a == "sha1" then hasher = require("resty.sha1"):new() end
+        if not hasher or not expected then
+            fs.close(fd); lock:unlock()
+            return finish(400, "unsupported Upload-Checksum")
+        end
+        alg = a
     end
 
-    -- Read the body in chunks (resty.upload? No — PATCH with raw body).
-    -- For the initial single-node implementation we read the whole body into
-    -- Lua (bounded by IMAGE_TUS_MAX_CHUNK).  Multi-node streaming will be
-    -- added in P8.
-    if not body then
-        ngx.req.read_body()
-        body = ngx.req.get_body_data()
+    local sock, serr = ngx.req.socket()
+    if not sock then
+        fs.close(fd); lock:unlock()
+        return finish(400, "cannot read body: " .. tostring(serr))
     end
-    if not body or #body == 0 then
-        fs.close(fd)
-        ngx.status = 204; ngx.exit(204)
+    sock:settimeout(SOCKET_TIMEOUT)
+
+    local remaining, written, werr = body_len, 0, nil
+    while remaining > 0 do
+        local want = remaining < READ_CHUNK and remaining or READ_CHUNK
+        local data, rerr, partial = sock:receive(want)
+        local chunk = data or partial
+        if chunk and #chunk > 0 then
+            local ok, e = fs.write_all(fd, chunk)
+            if not ok then werr = e; break end
+            if hasher then hasher:update(chunk) end
+            written = written + #chunk
+            remaining = remaining - #chunk
+        end
+        if not data then
+            logger.info("tus_patch_interrupted", { sid = id, error = rerr, received = written })
+            break
+        end
     end
 
-    local ok, werr = fs.write_all(fd, body)
-    fs.fsync(fd)
+    if hasher and remaining == 0 and hasher:final() ~= expected then
+        fs.ftruncate(fd, offset)
+        fs.close(fd); lock:unlock()
+        logger.warn("tus_checksum_mismatch", { sid = id, alg = alg })
+        return finish(460, "checksum mismatch")
+    end
+    if hasher and remaining > 0 then
+        -- Partial chunk with a checksum cannot be verified: drop it.
+        fs.ftruncate(fd, offset)
+        written = 0
+    end
     fs.close(fd)
 
-    if not ok then
-        logger.err("tus_patch_write_failed", { sid = session_id, error = tostring(werr) })
-        ngx.status = 500; ngx.exit(500)
+    if werr then
+        lock:unlock()
+        logger.err("tus_write_failed", { sid = id, error = tostring(werr) })
+        return finish(500, "storage error")
     end
 
-    -- Optional Upload-Checksum verification.
-    local checksum_hdr = ngx.var.http_upload_checksum or ""
-    if checksum_hdr ~= "" then
-        local alg, b64 = checksum_hdr:match("^(%w+)%s+(.+)$")
-        if not alg then
-            fs.unlink(part_path)
-            ngx.status = 460; ngx.header.content_type = "text/plain"
-            ngx.say("460 checksum header malformed"); ngx.exit(460)
-        end
-
-        local expected
-        if alg == "sha1" then
-            local sha1 = require "resty.sha1"
-            local h = sha1:new(); h:update(body); expected = require "resty.string".to_hex(h:final())
-        elseif alg == "sha256" then
-            local sha256 = require "resty.sha256"
-            local h = sha256:new(); h:update(body); expected = require "resty.string".to_hex(h:final())
-        else
-            fs.unlink(part_path)
-            ngx.status = 460; ngx.exit(460)
-        end
-
-        local ngx_b64 = require "ngx.base64"
-        local actual = ngx_b64.decode_base64url(b64)
-        if actual ~= expected then
-            fs.unlink(part_path)
-            logger.warn("tus_checksum_mismatch", { sid = session_id, alg = alg })
-            ngx.status = 460; ngx.exit(460)
+    local new_offset = offset + written
+    if written > 0 then
+        local ok, uerr = metadata.tus_session_advance(id, new_offset)
+        if not ok then
+            lock:unlock()
+            logger.err("tus_offset_failed", { sid = id, error = tostring(uerr) })
+            return finish(500, "storage error")
         end
     end
 
-    -- Update the offset in the database.
-    local new_offset = session.offset + #body
-    local ok, up_err = metadata.tus_session_advance(session_id, new_offset)
-    if not ok then
-        logger.err("tus_patch_offset_failed", { sid = session_id, error = tostring(up_err) })
-        ngx.status = 500; ngx.exit(500)
-    end
-
-    -- Complete: hand off to the shared finalize pipeline.
     if new_offset >= session.upload_length then
-        metadata.tus_session_set_state(session_id, "completed")
-        -- Spawn a background timer for finalize so the PATCH response comes
-        -- back quickly. The client polls HEAD for completion status.
-        -- Alternatively, finalize synchronously for simplicity:
-        local upload = require "image.upload"
-        local result = upload.finalize(part_path, session.metadata, subject, nil, true)
-        if not result then
-            metadata.tus_session_set_state(session_id, "error")
-            ngx.header["Upload-Offset"] = tostring(new_offset)
-            ngx.status = 204; ngx.exit(204)  -- PATCH response still 204
-        end
-        metadata.tus_session_set(session_id, result.hash, result.url)
-        ngx.header["Upload-Offset"] = tostring(new_offset)
-        ngx.header["X-Image-Hash"] = result.hash
-        ngx.header["X-Image-URL"] = result.url
-        ngx.status = 204; ngx.exit(204)
+        return complete(id, session, subject, 204, lock)
     end
-
+    lock:unlock()
     ngx.header["Upload-Offset"] = tostring(new_offset)
-    ngx.status = 204; ngx.exit(204)
+    ngx.header["Upload-Expires"] = ngx.http_time(session.expires_at)
+    if remaining > 0 then return finish(400, "body incomplete") end
+    return finish(204)
 end
 
--- ---- DELETE /files/{id} (terminate) ----
-function _M.terminate(session_id)
-    local session = metadata.tus_session_get(session_id)
-    if not session then
-        ngx.status = 404; ngx.exit(404)
-    end
-
+-- DELETE /files/{id}
+function _M.terminate(id)
     local subject = apikey.require()
-    if subject.role ~= "admin" and session.owner ~= subject.hash then
-        ngx.status = 403; ngx.exit(403)
-    end
-
-    -- Remove part file.
-    local part_path = config.tmp_dir .. "/tus-" .. session_id .. ".part"
-    pcall(fs.unlink, part_path)
-    metadata.tus_session_delete(session_id)
-
-    ngx.status = 204; ngx.exit(204)
+    owned_session(id, subject)
+    fs.unlink(part_path(id))
+    metadata.tus_session_delete(id)
+    return finish(204)
 end
 
--- ---- Request dispatch ----
--- Called from the nginx content_by_lua_block for ~ ^/files/.
 function _M.dispatch()
-    local uri = ngx.var.uri or ""
-    local session_id = uri:match("^/files/(%x+)$")
     local method = ngx.req.get_method()
-
-    if method == "OPTIONS" then
-        return _M.options()
+    if method == "OPTIONS" then return _M.options() end
+    local uri = ngx.var.uri or ""
+    if uri == "/files/" or uri == "/files" then
+        if method == "POST" then return _M.create() end
+        return finish(405)
     end
-
-    -- POST to the collection endpoint creates a new upload.
-    if method == "POST" and uri == "/files/" then
-        return _M.create()
-    end
-
-    -- All other methods require a session ID.
-    if not session_id then
-        ngx.status = 404; ngx.exit(404)
-    end
-
-    if method == "HEAD"   then return _M.head(session_id) end
-    if method == "PATCH"  then return _M.patch(session_id) end
-    if method == "DELETE" then return _M.terminate(session_id) end
-
-    respond_405()
+    local id = uri:match("^/files/(%x+)$")
+    if not id then return finish(404) end
+    if method == "HEAD" then return _M.head(id) end
+    if method == "PATCH" then return _M.patch(id) end
+    if method == "DELETE" then return _M.terminate(id) end
+    return finish(405)
 end
 
 return _M

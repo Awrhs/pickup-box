@@ -7,7 +7,6 @@ logs/
 *.md
 !README.md
 !PROGRESS.md
-!OPTIMIZATION_SUMMARY.md
 
 # Local env / secrets
 .env

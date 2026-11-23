@@ -65,6 +65,9 @@ long long iv_cache_dir_size(const char *dir, char *err, size_t errlen);
 int iv_probe_encode(const char *target_suffix);
 int iv_set_font_path(const char *path);
 int iv_phash_file(const char *path, char *out_hex, char *err, size_t errlen);
+int iv_digest_file(const char *path, char *out_sha_hex,
+                   unsigned int *out_crc, long long *out_size,
+                   char *err, size_t errlen);
 ]]
 
 local lib_ok, lib = pcall(ffi.load, LIB_PATH)
@@ -303,6 +306,21 @@ function _M.set_font_path(path)
     local rc = lib.iv_set_font_path(path)
     if rc ~= 0 then return nil, "iv_set_font_path failed" end
     return true
+end
+
+-- Streaming digest of a file: { sha256 = hex, crc32 = n, size = n }.
+-- Worker-safe entry point (no ngx API touches); returns a table so it can
+-- cross the ngx.run_worker_thread boundary.
+function _M._digest_file(path)
+    if not lib then return nil, "image_vips C library not available" end
+    if not path or path == "" then return nil, "empty path" end
+    local hex = ffi.new("char[65]")
+    local crc = ffi.new("unsigned int[1]")
+    local size = ffi.new("long long[1]")
+    local errbuf = ffi.new("char[?]", ERR_BUF_SIZE)
+    local rc = lib.iv_digest_file(path, hex, crc, size, errbuf, ERR_BUF_SIZE)
+    if rc ~= 0 then return nil, "digest failed: " .. ffi.string(errbuf) end
+    return { sha256 = ffi.string(hex, 64), crc32 = tonumber(crc[0]), size = tonumber(size[0]) }
 end
 
 -- pHash: perceptual hash of an image file. Returns 16-char hex string.

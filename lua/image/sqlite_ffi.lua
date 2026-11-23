@@ -264,6 +264,9 @@ function db_mt:run(sql, ...)
     end
     local rc = st:step()
     st:finalize()
+    if rc ~= DONE and rc ~= ROW and rc ~= OK then
+        error(("sqlite run failed: %s (rc=%d) | SQL: %s"):format(errmsg(self._db), rc, sql), 2)
+    end
     return rc
 end
 

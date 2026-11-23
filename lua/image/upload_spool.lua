@@ -1,107 +1,79 @@
--- Multipart parsing that streams the file directly to disk instead of
--- accumulating it in Lua memory. We keep a rolling 32-byte "magic" window at
--- the head of the file so format validation can run once the stream is done,
--- and we use the FFI libc helpers in fs_ffi to write without copying through
--- LuaJIT's string interning.
+-- Streaming multipart/form-data parser: every file part is written straight
+-- to its own temp file (no buffering in the Lua heap), so arbitrarily large
+-- uploads use constant memory.
 local upload = require "resty.upload"
 local fs = require "image.fs_ffi"
+local rand = require "common.rand"
 local ngx = ngx
 
 local _M = {}
 
 local CHUNK = 64 * 1024
-local HEAD_GOAL = 32  -- enough for all magic-byte checks incl. ftyp brand
 
--- Read the multipart body, writing the first file part to `final_path`
--- atomically (via a temp path + rename). Returns a result table on success:
---   { path, filename, content_type, size, head }
--- where `head` is the first <=32 bytes of the file (magic-bytes validation is
--- the caller's job). On failure returns nil, human-readable error.
-function _M.spool_file(final_path, max_bytes)
+-- Parse `filename="..."` / `filename*=UTF-8''...` from Content-Disposition.
+local function part_filename(value)
+    local star = value:match("filename%*=[Uu][Tt][Ff]%-8''([^;]+)")
+    if star then return ngx.unescape_uri(star) end
+    local plain = value:match('filename="([^"]*)"') or value:match("filename=([^;]+)")
+    return plain
+end
+
+-- Spool all file parts. Returns an array of { path, filename, size } or
+-- nil, error_code. Non-file fields are ignored.
+function _M.spool_files(tmp_dir, max_file_bytes, max_files)
     local form, err = upload:new(CHUNK)
-    if not form then
-        return nil, "failed to init upload: " .. tostring(err)
-    end
-    form:set_timeout(15000)  -- 15s between chunks (slow mobile clients)
+    if not form then return nil, "bad_multipart: " .. tostring(err) end
+    form:set_timeout(60000)  -- slow mobile links
 
-    local tmp_path = final_path .. ".uploading." .. ngx.worker.pid()
-    local fd, oerr = fs.open_write_excl(tmp_path)
-    if not fd then
-        return nil, "cannot open temp file: " .. tostring(oerr)
-    end
+    local files = {}
+    local cur          -- current file part { path, fd, size, filename }
+    local is_file = false
 
-    local total = 0
-    local saw_file = false
-    local filename
-    local content_type
-    local head = {}
-    local head_len = 0
-
-    local function abort(msg)
-        fs.close(fd)
-        fs.unlink(tmp_path)
-        return nil, msg
+    local function cleanup()
+        if cur and cur.fd then fs.close(cur.fd) end
+        for _, f in ipairs(files) do fs.unlink(f.path) end
+        if cur then fs.unlink(cur.path) end
     end
 
     while true do
         local typ, res, rerr = form:read()
-        if not typ then return abort("read error: " .. tostring(rerr)) end
+        if not typ then cleanup(); return nil, "read_error: " .. tostring(rerr) end
 
         if typ == "header" then
             local name, value = res[1], res[2]
             if name:lower() == "content-disposition" then
-                filename = value:match('filename="([^"]*)"')
-                if filename then saw_file = true end
-            elseif name:lower() == "content-type" then
-                content_type = value
+                local fname = part_filename(value)
+                is_file = fname ~= nil
+                if is_file then
+                    if #files >= max_files then cleanup(); return nil, "too_many_files" end
+                    local path = tmp_dir .. "/mp-" .. ngx.time() .. "-" .. rand.hex(8) .. ".part"
+                    local fd, oerr = fs.open_write_excl(path)
+                    if not fd then cleanup(); return nil, "tmp_open_failed: " .. tostring(oerr) end
+                    cur = { path = path, fd = fd, size = 0, filename = fname }
+                end
             end
         elseif typ == "body" then
-            if saw_file then
-                -- Keep the first HEAD_GOAL bytes in memory so we can validate
-                -- magic bytes without re-reading the file.
-                if head_len < HEAD_GOAL then
-                    local take = HEAD_GOAL - head_len
-                    if #res < take then take = #res end
-                    head[#head + 1] = res:sub(1, take)
-                    head_len = head_len + take
-                end
-
-                total = total + #res
-                if total > max_bytes then
-                    return abort("file too large")
-                end
-                local ok, werr = fs.write_all(fd, res)
-                if not ok then return abort(werr) end
+            if is_file and cur then
+                cur.size = cur.size + #res
+                if cur.size > max_file_bytes then cleanup(); return nil, "file_too_large" end
+                local ok, werr = fs.write_all(cur.fd, res)
+                if not ok then cleanup(); return nil, "write_failed: " .. tostring(werr) end
             end
         elseif typ == "part_end" then
-            if saw_file then break end
+            if is_file and cur then
+                fs.close(cur.fd)
+                cur.fd = nil
+                files[#files + 1] = cur
+                cur = nil
+            end
+            is_file = false
         elseif typ == "eof" then
             break
         end
     end
 
-    fs.fsync(fd)
-    fs.close(fd)
-
-    if total == 0 or head_len < 4 then
-        fs.unlink(tmp_path)
-        return nil, "no file content"
-    end
-
-    -- Atomic publish.
-    local ok, rename_err = fs.rename(tmp_path, final_path)
-    if not ok then
-        fs.unlink(tmp_path)
-        return nil, "rename failed: " .. tostring(rename_err)
-    end
-
-    return {
-        path = final_path,
-        filename = filename,
-        content_type = content_type,
-        size = total,
-        head = table.concat(head),
-    }
+    if #files == 0 then return nil, "no_file" end
+    return files
 end
 
 return _M

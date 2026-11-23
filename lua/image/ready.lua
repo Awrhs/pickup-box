@@ -12,14 +12,6 @@ local _M = {}
 -- the data directory has less than MIN_FREE_BYTES available.
 local MIN_FREE_BYTES = 50 * 1024 * 1024  -- 50 MiB
 
-local ffi = require "ffi"
-local has_statvfs = pcall(function()
-    ffi.cdef[[
-        typedef struct { unsigned long long a[16]; } iv_statvfs_t;
-        int statvfs(const char *path, iv_statvfs_t *s);
-    ]]
-end)
-
 local function check_disk()
     local fs = require "image.fs_ffi"
     for _, dir in ipairs({ config.orig_dir, config.cache_dir, config.tmp_dir }) do
@@ -27,20 +19,10 @@ local function check_disk()
             return { name = "disk", ok = false, reason = "missing " .. dir }
         end
     end
-    if has_statvfs then
-        local ok, free = pcall(function()
-            local buf = ffi.new("iv_statvfs_t")
-            if ffi.C.statvfs(config.data_dir, buf) == 0 then
-                local bsize = tonumber(buf.a[0])
-                local bavail = tonumber(buf.a[4])
-                if bsize and bavail then return bsize * bavail end
-            end
-            return nil
-        end)
-        if ok and free and free < MIN_FREE_BYTES then
-            return { name = "disk", ok = false,
-                     reason = "low disk: " .. tostring(free) .. " bytes free" }
-        end
+    local _, free = fs.disk_stats(config.data_dir)
+    if free and free < MIN_FREE_BYTES then
+        return { name = "disk", ok = false,
+                 reason = "low disk: " .. tostring(free) .. " bytes free" }
     end
     return { name = "disk", ok = true }
 end

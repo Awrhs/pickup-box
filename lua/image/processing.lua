@@ -111,6 +111,19 @@ function _M.concurrency()
     return MAX_CONCURRENCY
 end
 
+-- SHA-256 + CRC-32 + size of a file in one streaming pass, computed on the
+-- OS thread pool so multi-GB uploads never stall the event loop. Not gated by
+-- the libvips concurrency semaphore (it is pure I/O + hashing). Falls back to
+-- an in-process Lua implementation when the C helper is unavailable.
+function _M.digest_file(path)
+    if vips.available() then
+        local res, err = run_offloaded("_digest_file", path)
+        if res then return res end
+        logger.warn("digest_offload_failed", { error = tostring(err) })
+    end
+    return require("common.digest").file(path)
+end
+
 -- Compute perceptual hash of a file. Returns 16-char hex string or nil, err.
 function _M.phash_file(path)
     if not vips.available() then

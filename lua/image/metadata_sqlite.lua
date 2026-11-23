@@ -91,6 +91,40 @@ CREATE TABLE IF NOT EXISTS stats_daily (
 );
 ]]
 
+-- Shares: a set of blobs published under a link (slug) and a pickup code.
+-- `code` is NULL once the share is dead so codes can be reused.
+local SCHEMA_SHARES = [[
+CREATE TABLE IF NOT EXISTS shares (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug         TEXT NOT NULL UNIQUE,
+    code         TEXT,
+    title        TEXT NOT NULL DEFAULT '',
+    owner        TEXT NOT NULL,
+    owner_name   TEXT NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    max_visits   INTEGER NOT NULL DEFAULT 0,
+    visit_count  INTEGER NOT NULL DEFAULT 0,
+    revoked      INTEGER NOT NULL DEFAULT 0,
+    file_count   INTEGER NOT NULL DEFAULT 0,
+    total_bytes  INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shares_code ON shares(code) WHERE code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_shares_owner ON shares(owner, id);
+CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares(expires_at);
+CREATE TABLE IF NOT EXISTS share_files (
+    share_id   INTEGER NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+    seq        INTEGER NOT NULL,
+    blob_hash  TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    mime       TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    PRIMARY KEY (share_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_share_files_blob ON share_files(blob_hash);
+]]
+
 local LOCK_TIMEOUT = 10  -- seconds to wait for the metadata write lock
 
 -- Open the DB (idempotent). Uses a module-level semaphore so that if several
@@ -120,6 +154,7 @@ function _M.init()
         db:exec(SCHEMA_SLUGS)
         db:exec(SCHEMA_STATS)
         db:exec(SCHEMA_TUS)
+        db:exec(SCHEMA_SHARES)
         -- Apply any pending migrations (additive ALTER TABLEs for upgrades).
         _M.apply_migrations()
     end)
@@ -142,6 +177,12 @@ local MIGRATIONS = {
     [[ALTER TABLE images ADD COLUMN phash TEXT;]],
     -- 3: backed_up column for backup sync (P5).
     [[ALTER TABLE images ADD COLUMN backed_up INTEGER DEFAULT 0;]],
+    -- 4: blob kind (image/video/audio/other) decided by content sniffing.
+    [[ALTER TABLE images ADD COLUMN kind TEXT NOT NULL DEFAULT 'image';]],
+    -- 5: CRC-32 of the blob, needed to stream zip archives without re-reading.
+    [[ALTER TABLE images ADD COLUMN crc32 INTEGER;]],
+    -- 6: finished tus uploads remember the blob they produced.
+    [[ALTER TABLE tus_sessions ADD COLUMN blob_hash TEXT;]],
 }
 
 function _M.apply_migrations()
@@ -157,6 +198,12 @@ end
 -- True when init has completed successfully for this worker.
 function _M.ready()
     return db ~= nil
+end
+
+-- Raw connection (after init) for modules that run their own SQL.
+function _M.db()
+    if not db then _M.init() end
+    return db
 end
 
 -- Per-worker write serialization semaphore.
@@ -176,6 +223,52 @@ local function with_write_lock(fn)
     return select(2, unpack(results))
 end
 
+
+-- Run fn(db) while holding this worker's write lock (single statements are
+-- atomic in SQLite; use tx() for multi-statement atomicity).
+function _M.write(fn)
+    if not db then _M.init() end
+    if not db then return nil, "db_unavailable" end
+    return with_write_lock(function() return fn(db) end)
+end
+
+-- Run fn(db) inside BEGIN IMMEDIATE ... COMMIT under the write lock and
+-- return fn's results. Any failure (including a Lua error raised by fn, which
+-- may be a table) rolls back and is re-raised to the caller unchanged.
+function _M.tx(fn)
+    if not db then _M.init() end
+    if not db then error("db_unavailable", 0) end
+    local fn_err
+    local a, b, c = with_write_lock(function()
+        db:exec("BEGIN IMMEDIATE")
+        local res = { pcall(fn, db) }
+        if res[1] then
+            db:exec("COMMIT")
+            return select(2, unpack(res))
+        end
+        pcall(db.exec, db, "ROLLBACK")
+        fn_err = res[2]
+        return nil, "fn_failed"
+    end)
+    if fn_err ~= nil then error(fn_err, 0) end
+    if a == nil and b ~= nil then error(b, 0) end
+    return a, b, c
+end
+
+-- Collect all rows of a query as an array of name->value maps.
+function _M.rows(sql, ...)
+    if not db then _M.init() end
+    if not db then return {} end
+    local out = {}
+    for _, row in db:query(sql, ...) do out[#out + 1] = row end
+    return out
+end
+
+function _M.row(sql, ...)
+    if not db then _M.init() end
+    if not db then return nil end
+    return db:query_row(sql, ...)
+end
 
 -- Start-of-window timestamp. We use a rolling window of
 -- config.quota_window_days days rather than calendar months so it is
@@ -254,11 +347,11 @@ function _M.insert_with_quota(t, quota)
         db:run(
             [[INSERT OR IGNORE INTO images
                 (hash, orig_ext, mime, size_bytes, width, height,
-                 uploaded_by, uploaded_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)]],
+                 uploaded_by, uploaded_at, kind, crc32)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]],
             t.hash, t.orig_ext, t.mime, t.size_bytes,
-            t.width or ngx.null, t.height or ngx.null,
-            t.uploaded_by, ngx.time())
+            t.width, t.height,
+            t.uploaded_by, ngx.time(), t.kind or "other", t.crc32)
 
         if t.uploaded_by then
             add_usage_locked(t.uploaded_by, t.size_bytes)
@@ -279,7 +372,7 @@ function _M.get_image(hash)
     local ok, row = pcall(function()
         return db:query_row(
             [[SELECT id, hash, orig_ext, mime, size_bytes, width, height,
-                     uploaded_by, uploaded_at, deleted
+                     uploaded_by, uploaded_at, deleted, kind, crc32
               FROM images WHERE hash = ?]],
             hash)
     end)
@@ -289,6 +382,16 @@ function _M.get_image(hash)
     end
     if row and tonumber(row.deleted) == 1 then return nil end
     return row
+end
+
+-- Refresh a blob's upload time (dedup hit) so the unshared-blob grace
+-- period restarts and GC does not reclaim it under a fresh upload.
+function _M.touch_blob(hash)
+    if not db then _M.init() end
+    if not db then return end
+    with_write_lock(function()
+        db:run("UPDATE images SET uploaded_at=? WHERE hash=?", ngx.time(), hash)
+    end)
 end
 
 -- Store the perceptual hash for an image.
@@ -601,7 +704,7 @@ function _M.tus_session_get(id)
     if not db then _M.init() end
     if not db then return nil end
     local ok, row = pcall(db.query_row, db,
-        "SELECT id, upload_length, offset, metadata, owner, owner_node, created_at, expires_at, state FROM tus_sessions WHERE id=?", id)
+        "SELECT id, upload_length, offset, metadata, owner, owner_node, created_at, expires_at, state, blob_hash FROM tus_sessions WHERE id=?", id)
     return ok and row or nil
 end
 
@@ -627,11 +730,10 @@ function _M.tus_session_set_state(id, state)
     pcall(db.run, db, "UPDATE tus_sessions SET state=? WHERE id=?", state, id)
 end
 
--- Set final hash and URL on a completed session.
-function _M.tus_session_set(id, hash, url)
+-- Record the blob produced by a completed session.
+function _M.tus_session_done(id, hash)
     if not db then return end
-    pcall(db.run, db, "UPDATE tus_sessions SET state='done', metadata=? WHERE id=?",
-          '{"hash":"' .. (hash or "") .. '","url":"' .. (url or "") .. '"}', id)
+    pcall(db.run, db, "UPDATE tus_sessions SET state='done', blob_hash=? WHERE id=?", hash, id)
 end
 
 -- Delete a session.
@@ -646,7 +748,7 @@ function _M.tus_session_expire(now)
     local rows = {}
     pcall(function()
         for _, row in db:query(
-            "SELECT id FROM tus_sessions WHERE state='active' AND expires_at <= ?", now) do
+            "SELECT id FROM tus_sessions WHERE expires_at <= ?", now) do
             rows[#rows + 1] = row.id
         end
     end)

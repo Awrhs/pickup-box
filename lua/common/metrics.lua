@@ -84,8 +84,8 @@ local function emit_shared_dict(name)
 end
 
 local SHARED_DICTS = {
-    "metrics_stats", "circuit_state", "upload_limit",
-    "image_locks", "image_l1", "image_downloads", "image_meta_cache",
+    "metrics_stats", "circuit_state", "upload_limit", "pickup_locks", "pickup_guard",
+    "image_locks", "image_l1", "image_downloads",
 }
 
 function _M.emit_metrics()

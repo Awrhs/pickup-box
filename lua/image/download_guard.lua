@@ -254,17 +254,10 @@ function _M.meter(bytes_sent)
     local id = client_id()
     local now = ngx.time()
     local bucket = math.floor(now / 3600)
-    local day_bucket = math.floor(now / 86400)
     dict:incr("bw:" .. id .. ":" .. bucket, bytes, 0, 86400 * 2)
     dict:incr("bw:total:" .. bucket, bytes, 0, 86400 * 2)
     dict:incr("req:" .. id .. ":" .. bucket, 1, 0, 86400 * 2)
     dict:incr("req:total:" .. bucket, 1, 0, 86400 * 2)
-    -- Per-image counters for the analytics stats page (P4).
-    local image_hash = ngx.ctx and ngx.ctx.image_hash
-    if image_hash then
-        dict:incr("imgc:" .. image_hash .. ":" .. day_bucket, 1, 0, 86400 * 2)
-        dict:incr("imgb:" .. image_hash .. ":" .. day_bucket, bytes, 0, 86400 * 2)
-    end
 end
 
 -- Return approximate total bytes served in the last N hours (for /stats).

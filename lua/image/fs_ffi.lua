@@ -39,6 +39,14 @@ int fflush(void *stream);
 
 int __xstat(int ver, const char *path, void *buf);
 
+int ftruncate(int fd, long length);
+long lseek(int fd, long offset, int whence);
+
+/* struct statvfs (glibc/musl, 64-bit): f_bsize, f_frsize, f_blocks, f_bfree,
+   f_bavail, ... -- only the leading fields are read. */
+typedef struct { unsigned long long a[16]; } iv_statvfs_t;
+int statvfs(const char *path, iv_statvfs_t *s);
+
 typedef struct iv_dir DIR;
 struct iv_dirent {
     unsigned long long d_ino;
@@ -258,6 +266,43 @@ end
 
 function _M.fsync(fd)
     return C.fsync(fd) == 0
+end
+
+-- Open a file read-only; returns fd or nil, err.
+function _M.open_read(path)
+    local fd = C.open(path, 0, 0)
+    if fd < 0 then return nil, "open failed: errno=" .. tostring(last_errno()) end
+    return tonumber(fd)
+end
+
+-- Read up to `n` bytes from fd into a Lua string. Returns "" at EOF,
+-- or nil, err on failure. `buf` (char[n]) may be passed to avoid
+-- reallocating per call.
+function _M.read_fd(fd, n, buf)
+    buf = buf or ffi.new("char[?]", n)
+    local got = tonumber(C.read(fd, buf, n))
+    if got < 0 then return nil, "read failed: errno=" .. tostring(last_errno()) end
+    if got == 0 then return "" end
+    return ffi.string(buf, got)
+end
+
+-- Truncate an open file to `size` bytes and move the offset there.
+function _M.ftruncate(fd, size)
+    if C.ftruncate(fd, size) ~= 0 then
+        return nil, "ftruncate failed: errno=" .. tostring(last_errno())
+    end
+    C.lseek(fd, size, SEEK_SET)
+    return true
+end
+
+-- Filesystem capacity for the filesystem holding `path`:
+-- returns total_bytes, available_bytes (for unprivileged users) or nil.
+function _M.disk_stats(path)
+    local buf = ffi.new("iv_statvfs_t")
+    if C.statvfs(path, buf) ~= 0 then return nil end
+    local frsize = tonumber(buf.a[1])
+    if not frsize or frsize == 0 then frsize = tonumber(buf.a[0]) end
+    return tonumber(buf.a[2]) * frsize, tonumber(buf.a[4]) * frsize
 end
 
 -- Constants exposed for callers

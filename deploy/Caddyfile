@@ -1,0 +1,26 @@
+# Caddy terminates TLS (certificates from Let's Encrypt, renewed
+# automatically) and forwards everything to pickup-box.
+#
+# PICKUP_DOMAIN unset -> plain HTTP on port 80 (for a quick test by IP).
+{$PICKUP_DOMAIN::80} {
+	# Internal endpoints are never exposed.
+	@internal path /metrics /__blob/*
+	respond @internal 404
+
+	encode {
+		gzip
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type image/svg+xml*
+		}
+	}
+
+	reverse_proxy pickup-box:80 {
+		# Stream large downloads (zip archives) without buffering.
+		flush_interval -1
+	}
+
+	header -Server
+}

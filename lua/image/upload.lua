@@ -1,207 +1,183 @@
--- Multipart upload handler. The file is streamed straight to a temporary
--- directory via FFI write(2); once on disk we validate the magic bytes, hash
--- it, and move it atomically into content-addressed storage. This keeps
--- multi-megabyte uploads out of the Lua heap entirely.
+-- Blob ingestion shared by the multipart API (/api/upload) and tus (/files/).
 --
--- The same post-spool pipeline is reused by the tus 1.0 protocol (tus.lua)
--- via _M.finalize().
+-- A fully received upload sits in a temp file; store() sniffs its type from
+-- magic bytes, digests it (SHA-256 + CRC-32 on the OS thread pool), and moves
+-- it into content-addressed storage. Identical content is stored once.
 local config = require "image.config"
-local util = require "image.util"
 local storage = require "image.storage"
 local metadata = require "image.metadata"
 local spool = require "image.upload_spool"
 local vips = require "image.vips_ffi"
 local processing = require "image.processing"
+local fs = require "image.fs_ffi"
 local logger = require "common.logger"
 local metrics = require "common.metrics"
-local rate_limit = require "common.rate_limit"
+local pconfig = require "pickup.config"
+local sniff = require "pickup.sniff"
 local ngx = ngx
 
 local _M = {}
 
--- Hash a file in chunks via the FFI libc so we do not have to slurp it into
--- Lua memory. Returns hex sha256 or nil, err.
-local function hash_file_chunked(path)
-    local ffi = require "ffi"
-    local C = ffi.C
-    local O_RDONLY = 0
-    local fd = C.open(path, O_RDONLY, 0)
-    if fd < 0 then return nil, "open failed" end
-
-    local resty_sha = require "resty.sha256"
-    local h = resty_sha:new()
-    local BUF = 64 * 1024
-    local buf = ffi.new("char[?]", BUF)
-    local total = 0
-    while true do
-        local n = tonumber(C.read(fd, buf, BUF))
-        if n < 0 then C.close(fd); return nil, "read failed" end
-        if n == 0 then break end
-        h:update(ffi.string(buf, n))
-        total = total + n
-    end
-    C.close(fd)
-    return require "resty.string".to_hex(h:final()), total
+-- Per-blob mutual exclusion across workers (shared with the GC).
+function _M.lock_blob(hash)
+    local lock = require("resty.lock"):new("pickup_locks", { timeout = 30, exptime = 120 })
+    local ok, err = lock:lock("blob:" .. hash)
+    if not ok then return nil, err end
+    return lock
 end
 
--- Shared post-spool pipeline: validate magic bytes, hash, get dimensions,
--- place in storage, check quota, insert metadata, pregenerate, compute
--- phash, and build the standard 201 JSON response fields.
---
--- `tmp` — path to the assembled file on disk (will be consumed by place_orig)
--- `filename` — original filename from upload metadata
--- `subject` — resolved API key record { name, hash, role, quota }
--- `cleanup` — optional function called before error exits (e.g. to unlink tmp)
---
--- On success: calls ngx.exit(201) with JSON body (does NOT return).
--- On quota/exceeded failure: calls the appropriate ngx.exit.
--- On other errors: calls util.*_error which exits.
--- To callers that need the response fields without an ngx.exit flow (tus),
--- pass `no_exit = true` — the function returns the response table and does
--- NOT exit; the caller must ngx.exit().
-function _M.finalize(tmp, filename, subject, cleanup, no_exit)
-    local fs = require "image.fs_ffi"
-    local og_cleanup = cleanup
-    cleanup = function()
-        if og_cleanup then og_cleanup() end
-        pcall(fs.unlink, tmp)
-    end
-    local function bail(status, msg)
-        cleanup()
-        if no_exit then return nil, msg end
-        util.bad_request(msg)  -- calls ngx.exit
+-- Space left on the data volume after writing `incoming` more bytes must stay
+-- above PICKUP_MIN_FREE_PERCENT of the disk.
+function _M.disk_has_room(incoming)
+    local total, avail = fs.disk_stats(config.data_dir)
+    if not total or total == 0 then return true end
+    local reserve = total * pconfig.min_free_percent / 100
+    return (avail - (incoming or 0)) >= reserve
+end
+
+-- Quota left in the rolling window for a subject (nil = unlimited).
+function _M.quota_left(subject)
+    if subject.role == "admin" then return nil end
+    local quota = subject.quota or pconfig.quota_bytes
+    if not quota or quota <= 0 then return nil end
+    local used = metadata.usage_for(subject.hash)
+    return math.max(0, quota - used), quota, used
+end
+
+-- Turn a finished temp file into a stored blob.
+-- Returns blob { hash, size, kind, fmt, mime, ext, width, height, crc32,
+-- deduped } or nil, error_code, http_status. The temp file is always
+-- consumed (moved or deleted).
+function _M.store(tmp, subject)
+    local function fail(code, status)
+        fs.unlink(tmp)
+        return nil, code, status
     end
 
-    -- Validate strictly by magic bytes (never trust the extension).
-    local head = fs.read_head(tmp, 64)
-    if not head then return bail(400, "cannot read temp file") end
-    local fmt, mime = util.detect_format(head)
-    if not fmt or not config.allowed_formats[fmt] then
-        return bail(400, "unsupported or unrecognized image format")
-    end
-    local ext = fmt == "jpeg" and "jpg" or fmt
+    local head = fs.read_head(tmp, 64) or ""
+    local kind, fmt, mime, ext = sniff.classify(head)
 
-    -- Hash the file content (chunked).
-    local hash, size_or_err = hash_file_chunked(tmp)
-    if not hash then
-        cleanup()
-        logger.err("hash_file_failed", { error = size_or_err })
-        if no_exit then return nil, "hash failed" end
-        util.server_error("hash failed")
+    local digest, derr = processing.digest_file(tmp)
+    if not digest then
+        logger.err("digest_failed", { error = tostring(derr) })
+        return fail("digest_failed", 500)
     end
+    local hash, size = digest.sha256, digest.size
 
-    -- Read width/height from file header.
     local width, height
-    if vips.available() then
+    if kind == "image" then
         local w, h = vips.dimensions_file(tmp)
-        if not w then return bail(400, "cannot decode image") end
-        width, height = w, h
-        if (width * height) > config.max_pixels then
-            return bail(400, "image too large in pixels")
+        if w and (w * h) <= config.max_pixels then
+            width, height = w, h
+        else
+            -- Undecodable or oversized: still a valid file, just no previews.
+            kind = "other"
         end
     end
 
-    -- Publish into content-addressed storage.
-    local final, existed = storage.place_orig(tmp, hash, ext)
-    if not final then
-        cleanup()
-        logger.err("storage_place_failed", { error = tostring(existed) })
-        if no_exit then return nil, "storage error" end
-        util.server_error("storage error")
+    local lock, lerr = _M.lock_blob(hash)
+    if not lock then
+        logger.err("blob_lock_failed", { error = tostring(lerr) })
+        return fail("busy", 503)
     end
 
-    -- Insert with quota.
-    local deduped = existed
-    if not existed then
-        local quota = subject.quota or config.default_quota_bytes
-        local rowid, reason = metadata.insert_with_quota({
-            hash = hash, orig_ext = ext, mime = mime,
-            size_bytes = size_or_err,
-            width = width, height = height,
-            uploaded_by = subject.hash,
-        }, quota)
-        if reason == "dedup" then
-            deduped = true
-        elseif not rowid then
-            storage.delete_orig(hash, ext)
-            if reason == "quota" then
-                if no_exit then return nil, "quota" end
-                ngx.status = 413; ngx.header.content_type = "text/plain"
-                ngx.say("413 Payload Too Large - quota exceeded"); ngx.exit(413)
+    local existing = metadata.get_image(hash)
+    if existing then
+        local path = storage.orig_path(hash, existing.orig_ext)
+        if fs.exists(path) then
+            fs.unlink(tmp)
+        else
+            -- Row without file (e.g. disk restored from backup): repair.
+            local placed, perr = storage.place_orig(tmp, hash, existing.orig_ext)
+            if not placed then
+                lock:unlock()
+                logger.err("storage_place_failed", { error = tostring(perr) })
+                return fail("storage_error", 500)
             end
-            logger.err("metadata_insert_failed", { error = tostring(reason) })
-            if no_exit then return nil, "metadata error" end
-            util.server_error("metadata error")
         end
+        metadata.touch_blob(hash)
+        lock:unlock()
+        return {
+            hash = hash, size = tonumber(existing.size_bytes), kind = existing.kind or kind,
+            mime = existing.mime, ext = existing.orig_ext, width = existing.width,
+            height = existing.height, crc32 = existing.crc32 or digest.crc32, deduped = true,
+        }
     end
+
+    local final, perr = storage.place_orig(tmp, hash, ext)
+    if not final then
+        lock:unlock()
+        logger.err("storage_place_failed", { error = tostring(perr) })
+        return fail("storage_error", 500)
+    end
+
+    local quota = nil
+    if subject.role ~= "admin" then quota = subject.quota or pconfig.quota_bytes end
+    local rowid, reason = metadata.insert_with_quota({
+        hash = hash, orig_ext = ext, mime = mime, size_bytes = size,
+        width = width, height = height, uploaded_by = subject.hash,
+        kind = kind, crc32 = digest.crc32,
+    }, quota)
+    if not rowid and reason ~= "dedup" then
+        storage.delete_orig(hash, ext)
+        lock:unlock()
+        if reason == "quota" then return nil, "quota_exceeded", 413 end
+        logger.err("metadata_insert_failed", { error = tostring(reason) })
+        return nil, "metadata_error", 500
+    end
+    lock:unlock()
 
     metrics.incr_image_upload()
-
-    -- Async pre-generation and pHash on new uploads.
-    if not deduped then
-        local pregen = require "image.pregenerator"
-        pregen.schedule_file(final, hash, ext)
-
-        -- Best-effort phash.
-        if config.phash_enabled then
-            local phash, perr = processing.phash_file(final)
-            if phash then
-                metadata.set_phash(hash, phash)
-                -- (similar_to annotation skipped in shared path since the
-                -- response is already generic; callers who want it can add)
-            end
-        end
+    if kind == "image" and sniff.THUMBNAILABLE[fmt] then
+        require("image.pregenerator").schedule_file(final, hash, ext)
     end
 
-    -- Build response fields.
-    local base = ngx.var.scheme .. "://" .. ngx.var.host
-    local plain = base .. "/i/" .. hash
-    local with_ext = plain .. "." .. ext
-    local md = "![" .. (filename or hash) .. "](" .. with_ext .. ")"
-    local html = '<img src="' .. with_ext .. '" alt="' .. (filename or hash) .. '">'
-
-    local resp = {
-        hash = hash, url = with_ext, url_plain = plain,
-        markdown = md, html = html,
-        filename = filename, mime = mime,
-        size = size_or_err, width = width, height = height,
-        deduped = deduped,
+    return {
+        hash = hash, size = size, kind = kind, fmt = fmt, mime = mime, ext = ext,
+        width = width, height = height, crc32 = digest.crc32, deduped = false,
     }
-    local slug = metadata.ensure_slug(hash)
-    if slug then
-        resp.short_url = (base .. "/s/" .. slug)
-        resp.slug = slug
-    end
-
-    if no_exit then return resp end
-
-    ngx.status = 201
-    ngx.header.content_type = "application/json"
-    local cjson = require "cjson.safe"
-    ngx.say(cjson.encode(resp))
-    ngx.exit(201)
 end
 
--- POST /upload (multipart/form-data entry point).
-function _M.handle(subject)
-    if not rate_limit.check_upload_limit(subject.hash) then
-        rate_limit.block_request("upload_rate_limit_exceeded")
-    end
+-- Public view of a stored blob for API responses.
+function _M.describe(blob, name)
+    return {
+        hash = blob.hash, size = blob.size, kind = blob.kind,
+        name = name, width = blob.width, height = blob.height,
+        deduped = blob.deduped or false,
+    }
+end
 
+-- POST /api/upload (multipart/form-data, one or more file parts).
+-- Returns an array of { blob, name } or nil, error_code, status.
+function _M.receive_multipart(subject)
     local ct = ngx.var.http_content_type or ""
     if not ct:lower():find("multipart/form-data", 1, true) then
-        util.bad_request("Content-Type must be multipart/form-data")
+        return nil, "expected_multipart", 400
+    end
+    local declared = tonumber(ngx.var.http_content_length)
+    if declared and not _M.disk_has_room(declared) then
+        return nil, "disk_full", 507
+    end
+    local left = _M.quota_left(subject)
+    if left and declared and declared > left + 1024 * 1024 then
+        return nil, "quota_exceeded", 413
     end
 
-    local tmp = config.tmp_dir .. "/upload-" .. ngx.worker.pid() .. "-"
-        .. ngx.time() .. ".bin"
-
-    local res, serr = spool.spool_file(tmp, config.max_upload_bytes)
-    if not res then
-        util.bad_request(serr or "invalid upload")
+    local parts, serr = spool.spool_files(config.tmp_dir, pconfig.max_file_bytes, pconfig.max_files)
+    if not parts then
+        return nil, serr or "invalid_upload", (serr == "file_too_large") and 413 or 400
     end
 
-    _M.finalize(tmp, res.filename, subject)
+    local out = {}
+    for i, part in ipairs(parts) do
+        local blob, code, status = _M.store(part.path, subject)
+        if not blob then
+            for j = i + 1, #parts do fs.unlink(parts[j].path) end
+            return nil, code, status
+        end
+        out[#out + 1] = { blob = blob, name = part.filename }
+    end
+    return out
 end
 
 return _M

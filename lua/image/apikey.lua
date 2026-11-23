@@ -29,7 +29,8 @@ local _M = {}
 -- Reject presented keys shorter than this to prevent users from
 -- accidentally configuring trivial secrets. Configurable via
 -- IMAGE_MIN_KEY_LENGTH (default 16).
-local MIN_KEY_LENGTH = tonumber(os.getenv("IMAGE_MIN_KEY_LENGTH")) or 16
+local MIN_KEY_LENGTH = tonumber(os.getenv("IMAGE_MIN_KEY_LENGTH"))
+    or require("pickup.config").min_password_len
 
 -- Constant-time hex comparison.
 local function const_eq_hex(a, b)
@@ -111,20 +112,23 @@ function _M.authenticate()
 end
 
 function _M.require()
+    local guard = require "pickup.guard"
+    if guard.blocked("auth") then
+        ngx.header["Retry-After"] = tostring(guard.retry_after("auth"))
+        require("image.errors").respond(429, "密码错误次数过多，请稍后再试 (too many failed logins)")
+    end
     local raw, source = _M.extract_key()
     local subj, reason = resolve(raw)
     if not subj then
+        if raw then guard.fail("auth") end
         security.audit("auth_failed", { reason = reason, source = source })
         if reason == "expired" then
             ngx.header["WWW-Authenticate"] =
-                'Bearer realm="image", error="invalid_token", error_description="key expired"'
+                'Bearer realm="pickup", error="invalid_token", error_description="key expired"'
         else
-            ngx.header["WWW-Authenticate"] = 'Bearer realm="image"'
+            ngx.header["WWW-Authenticate"] = 'Bearer realm="pickup"'
         end
-        ngx.status = 401
-        ngx.header.content_type = "text/plain"
-        ngx.say("401 Unauthorized - valid API key required")
-        ngx.exit(401)
+        require("image.errors").respond(401, "需要正确的上传密码 (valid password required)")
     end
     if source == "query" then
         security.audit("api_key_in_query",
@@ -136,12 +140,8 @@ end
 function _M.require_admin()
     local subj = _M.require()
     if subj.role ~= "admin" then
-        ngx.status = 403
-        ngx.header.content_type = "text/plain"
-        ngx.say("403 Forbidden - admin role required")
-        security.audit("forbidden",
-            { key_name = subj.name, path = ngx.var.uri })
-        ngx.exit(403)
+        security.audit("forbidden", { key_name = subj.name, path = ngx.var.uri })
+        require("image.errors").respond(403, "admin role required")
     end
     return subj
 end

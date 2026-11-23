@@ -126,6 +126,14 @@ int iv_phash_file(const char *path, char *out_hex, char *err, size_t errlen);
  */
 int iv_set_font_path(const char *path);
 
+/* Stream a file once and compute its SHA-256 (64 lowercase hex chars +
+ * NUL written to out_sha_hex, which must hold 65 bytes), CRC-32 (IEEE, as
+ * used by zip) and size. Pure C, no libvips state: safe on any thread.
+ * Returns 0 on success, -1 on error (message in err). */
+int iv_digest_file(const char *path, char *out_sha_hex,
+                   unsigned int *out_crc, long long *out_size,
+                   char *err, size_t errlen);
+
 #ifdef __cplusplus
 }
 #endif

@@ -6,7 +6,7 @@ local logger = require "common.logger"
 local _M = {}
 
 local config = {
-    upload_max_requests = tonumber(os.getenv("UPLOAD_MAX_REQUESTS")) or 30,
+    upload_max_requests = tonumber(os.getenv("UPLOAD_MAX_REQUESTS")) or 600,
     upload_window_seconds = tonumber(os.getenv("UPLOAD_WINDOW")) or 60,
     enabled = true,
 }

@@ -1,3 +1,6 @@
+# Development stack: builds the image locally and bind-mounts lua/, static/
+# and nginx.conf so edits apply after `docker compose exec pickup-box
+# openresty -s reload`. For a public server use deploy/docker-compose.yml.
 services:
   pickup-box:
     build: .
@@ -5,70 +8,16 @@ services:
     container_name: pickup-box
     ports:
       - "80:80"
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./lua:/opt/pickup-box/lua:ro
+      - ./static:/opt/pickup-box/static:ro
       - ./conf/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
       - ./logs:/var/log/nginx
-      - image-data:/data
-    environment:
-      - TRUST_X_FORWARDED_FOR=${TRUST_X_FORWARDED_FOR:-false}
-      - IMAGE_TRUSTED_PROXY_HOPS=${IMAGE_TRUSTED_PROXY_HOPS:-1}
-      - IMAGE_DATA_DIR=${IMAGE_DATA_DIR:-/data/images}
-      - IMAGE_DB_PATH=${IMAGE_DB_PATH:-/data/images/image.db}
-      - IMAGE_API_KEYS=${IMAGE_API_KEYS:-}
-      - IMAGE_API_KEY_FILE=${IMAGE_API_KEY_FILE:-}
-      - IMAGE_DEFAULT_QUOTA_BYTES=${IMAGE_DEFAULT_QUOTA_BYTES:-0}
-      - IMAGE_QUOTA_WINDOW_DAYS=${IMAGE_QUOTA_WINDOW_DAYS:-30}
-      - IMAGE_MAX_UPLOAD_BYTES=${IMAGE_MAX_UPLOAD_BYTES:-20971520}
-      - IMAGE_MAX_PIXELS=${IMAGE_MAX_PIXELS:-40000000}
-      - IMAGE_CACHE_SECONDS=${IMAGE_CACHE_SECONDS:-31536000}
-      - IMAGE_ENABLE_PROCESSING=${IMAGE_ENABLE_PROCESSING:-true}
-      - IMAGE_WATERMARK_PATH=${IMAGE_WATERMARK_PATH:-}
-      - IMAGE_WATERMARK_OPACITY=${IMAGE_WATERMARK_OPACITY:-0.3}
-      - IMAGE_WATERMARK_POSITION=${IMAGE_WATERMARK_POSITION:-southeast}
-      - IMAGE_UPLOAD_TITLE=${IMAGE_UPLOAD_TITLE:-pickup-box}
-      - IMAGE_VIPS_LIB=${IMAGE_VIPS_LIB:-/opt/pickup-box/c/image_vips.so}
-      # 处理并发：每个 worker 同时进行的 libvips 操作数 + 线程 offload
-      - IMAGE_MAX_CONCURRENCY=${IMAGE_MAX_CONCURRENCY:-2}
-      - IMAGE_THREAD_POOL=${IMAGE_THREAD_POOL:-default}
-      - IMAGE_ACQUIRE_TIMEOUT_MS=${IMAGE_ACQUIRE_TIMEOUT_MS:-30000}
-      # 上传专用限流（每个 API Key 在窗口内的最大上传次数）
-      - UPLOAD_MAX_REQUESTS=${UPLOAD_MAX_REQUESTS:-30}
-      - UPLOAD_WINDOW=${UPLOAD_WINDOW:-60}
-      # 派生图磁盘缓存上限（字节），超过则按最久未修改淘汰，默认 5 GiB
-      - IMAGE_CACHE_MAX_BYTES=${IMAGE_CACHE_MAX_BYTES:-5368709120}
-      # L1 内存缓存单条上限（字节），默认 256 KiB（字典总大小见 nginx.conf image_l1）
-      - IMAGE_L1_MAX_BYTES=${IMAGE_L1_MAX_BYTES:-262144}
-      # 公开下载侧防护
-      - IMAGE_DOWNLOAD_RPM=${IMAGE_DOWNLOAD_RPM:-600}
-      - IMAGE_DOWNLOAD_RATE_WINDOW=${IMAGE_DOWNLOAD_RATE_WINDOW:-60}
-      - IMAGE_DOWNLOAD_REFERER_MODE=${IMAGE_DOWNLOAD_REFERER_MODE:-off}
-      - IMAGE_DOWNLOAD_REFERER_LIST=${IMAGE_DOWNLOAD_REFERER_LIST:-}
-      - IMAGE_DOWNLOAD_REFERER_ALLOW_EMPTY=${IMAGE_DOWNLOAD_REFERER_ALLOW_EMPTY:-false}
-      - IMAGE_DOWNLOAD_SIGNED_URLS=${IMAGE_DOWNLOAD_SIGNED_URLS:-false}
-      - IMAGE_DOWNLOAD_SECRET=${IMAGE_DOWNLOAD_SECRET:-}
-      - IMAGE_DOWNLOAD_SIGN_TTL=${IMAGE_DOWNLOAD_SIGN_TTL:-3600}
-      - IMAGE_DOWNLOAD_METER=${IMAGE_DOWNLOAD_METER:-true}
-      # 预生成
-      - IMAGE_PREGENERATE_SIZES=${IMAGE_PREGENERATE_SIZES:-320,640,1024,1920}
-      - IMAGE_PREGENERATE_FORMAT=${IMAGE_PREGENERATE_FORMAT:-webp}
-      - IMAGE_PREGENERATE_QUALITY=${IMAGE_PREGENERATE_QUALITY:-82}
-      # 孤儿文件/软删除 GC 周期（秒）
-      - IMAGE_GC_INTERVAL=${IMAGE_GC_INTERVAL:-21600}
-      # 文字水印（字体运行时挂载，镜像不内置）
-      - IMAGE_TEXT_FONT_PATH=${IMAGE_TEXT_FONT_PATH:-}
-      - IMAGE_TEXT_FONT_DESC=${IMAGE_TEXT_FONT_DESC:-sans}
-      - IMAGE_WATERMARK_TEXT_SCALE=${IMAGE_WATERMARK_TEXT_SCALE:-0.04}
-      - IMAGE_WATERMARK_MARGIN=${IMAGE_WATERMARK_MARGIN:-16}
-      - IMAGE_WATERMARK_IMAGE_SCALE=${IMAGE_WATERMARK_IMAGE_SCALE:-0.2}
-      - IMAGE_PHASH_ENABLED=${IMAGE_PHASH_ENABLED:-true}
-      - IMAGE_PHASH_REJECT=${IMAGE_PHASH_REJECT:-false}
-      - IMAGE_PHASH_THRESHOLD=${IMAGE_PHASH_THRESHOLD:-10}
-      - IMAGE_PHASH_BACKFILL=${IMAGE_PHASH_BACKFILL:-20}
-      - IMAGE_STATS_FLUSH_INTERVAL=${IMAGE_STATS_FLUSH_INTERVAL:-60}
-      - IMAGE_TUS_EXPIRY=${IMAGE_TUS_EXPIRY:-86400}
-      - IMAGE_TUS_MAX_CHUNK=${IMAGE_TUS_MAX_CHUNK:-8388608}
+      - pickup-data:/data
     restart: unless-stopped
 
 volumes:
-  image-data:
+  pickup-data:

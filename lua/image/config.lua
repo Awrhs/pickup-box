@@ -142,6 +142,22 @@ function _M.reload_key_file(force)
     end
 end
 
+-- pickup-box accounts: PICKUP_PASSWORD is the owner (admin); PICKUP_USERS
+-- holds extra "name:password[:role]" entries.
+do
+    local pc = require "pickup.config"
+    if pc.owner_password then register_key("owner", pc.owner_password, "admin") end
+    if pc.users then
+        for tok in string.gmatch(pc.users, "[^,]+") do
+            local entry = tok:gsub("^%s+", ""):gsub("%s+$", "")
+            if #entry > 0 then
+                local name, secret, role, quota, expires = parse_entry(entry)
+                if name and secret then register_key(name, secret, role, quota, expires) end
+            end
+        end
+    end
+end
+
 _M.api_key_file       = os.getenv("IMAGE_API_KEY_FILE")
 _M.api_key_file_size  = 0
 
@@ -167,13 +183,13 @@ _M.watermark_position = os.getenv("IMAGE_WATERMARK_POSITION") or "southeast"
 _M.upload_page_title  = os.getenv("IMAGE_UPLOAD_TITLE") or "pickup-box"
 
 -- Internal location (nginx) used to stream files via sendfile
-_M.file_location      = "/__image_file/"
+_M.file_location      = "/__blob/"
 
 -- Storage backend: only "local" (on-disk content-addressed store).
 _M.storage_backend    = os.getenv("IMAGE_STORAGE_BACKEND") or "local"
 
 -- pHash perceptual hash (P3). 0 disables; threshold is Hamming distance.
-_M.phash_enabled  = bool(os.getenv("IMAGE_PHASH_ENABLED"), true)
+_M.phash_enabled  = bool(os.getenv("IMAGE_PHASH_ENABLED"), false)
 _M.phash_reject   = bool(os.getenv("IMAGE_PHASH_REJECT"), false)
 _M.phash_threshold = num(os.getenv("IMAGE_PHASH_THRESHOLD"), 10)
 _M.phash_backfill = num(os.getenv("IMAGE_PHASH_BACKFILL"), 20)
@@ -209,7 +225,7 @@ _M.vips_suffix = {
 -- Parsed from IMAGE_PREGENERATE_SIZES as a comma-separated list of pixel widths.
 _M.pregenerate_widths = {}
 do
-    local raw = os.getenv("IMAGE_PREGENERATE_SIZES") or "320,640,1024,1920"
+    local raw = os.getenv("IMAGE_PREGENERATE_SIZES") or "320,1280"
     for tok in string.gmatch(raw, "%d+") do
         local w = tonumber(tok)
         if w and w >= 16 and w <= 10000 then

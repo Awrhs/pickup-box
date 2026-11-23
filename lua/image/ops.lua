@@ -8,7 +8,7 @@ local _M = {}
 local function version_info()
     local ok, fs = pcall(require, "image.fs_ffi")
     if not ok then return nil end
-    for _, p in ipairs({ "/opt/pickup-box/VERSION", "/etc/pickup-box/version" }) do
+    for _, p in ipairs({ "/opt/pickup-box/VERSION" }) do
         local v = fs.read_file(p)
         if v and #v > 0 then
             return (v:gsub("%s+$", ""))
@@ -38,7 +38,20 @@ function _M.ready_check()
     ngx.exit(status)
 end
 
+-- /metrics is private: with PICKUP_METRICS_TOKEN set it requires
+-- "Authorization: Bearer <token>"; otherwise only requests made from inside
+-- the container (127.0.0.1, not proxied) are answered.
 function _M.metrics()
+    local token = require("pickup.config").metrics_token
+    if token then
+        local auth = ngx.var.http_authorization or ""
+        local given = auth:match("^%s*[Bb]earer%s+(%S+)%s*$")
+        if not require("common.crypto").const_eq(given or "", token) then
+            return ngx.exit(404)
+        end
+    elseif ngx.var.remote_addr ~= "127.0.0.1" or ngx.var.http_x_forwarded_for then
+        return ngx.exit(404)
+    end
     require("common.metrics").emit_metrics()
 end
 

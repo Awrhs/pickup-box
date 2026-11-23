@@ -21,6 +21,8 @@
  * Use iv_set_font_path() at init time to register a runtime-mounted font
  * file; the gateway itself carries zero fonts in the image.
  */
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -936,5 +938,66 @@ int iv_phash_file(const char *path, char *out_hex,
             hash |= (1ULL << (63 - i));
 
     snprintf(out_hex, 17, "%016llx", hash);
+    return 0;
+}
+/* ---- streaming file digest: SHA-256 (hex) + CRC-32 (IEEE) + size ---- */
+
+/* Table-driven CRC-32 (reflected, polynomial 0xEDB88320), as used by zip. */
+static void iv_crc32_table(uint32_t table[256]) {
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t c = i;
+        for (int k = 0; k < 8; k++)
+            c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+        table[i] = c;
+    }
+}
+
+int iv_digest_file(const char *path, char *out_sha_hex,
+                   unsigned int *out_crc, long long *out_size,
+                   char *err, size_t errlen) {
+    if (err && errlen) err[0] = '\0';
+    if (!path || !out_sha_hex || !out_crc || !out_size) {
+        iv_set_error(err, errlen, "invalid argument");
+        return -1;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        iv_set_error(err, errlen, "cannot open file");
+        return -1;
+    }
+    const size_t BUFSZ = 1 << 20;  /* 1 MiB */
+    unsigned char *buf = (unsigned char *)malloc(BUFSZ);
+    if (!buf) {
+        fclose(f);
+        iv_set_error(err, errlen, "out of memory");
+        return -1;
+    }
+    uint32_t table[256];
+    iv_crc32_table(table);
+    uint32_t crc = 0xFFFFFFFFu;
+    long long total = 0;
+    GChecksum *ck = g_checksum_new(G_CHECKSUM_SHA256);
+
+    size_t n;
+    while ((n = fread(buf, 1, BUFSZ, f)) > 0) {
+        g_checksum_update(ck, buf, (gssize)n);
+        for (size_t i = 0; i < n; i++)
+            crc = table[(crc ^ buf[i]) & 0xFFu] ^ (crc >> 8);
+        total += (long long)n;
+    }
+    int failed = ferror(f);
+    fclose(f);
+    free(buf);
+    if (failed) {
+        g_checksum_free(ck);
+        iv_set_error(err, errlen, "read error");
+        return -1;
+    }
+    const gchar *hex = g_checksum_get_string(ck);
+    memcpy(out_sha_hex, hex, 64);
+    out_sha_hex[64] = '\0';
+    g_checksum_free(ck);
+    *out_crc = crc ^ 0xFFFFFFFFu;
+    *out_size = total;
     return 0;
 }
