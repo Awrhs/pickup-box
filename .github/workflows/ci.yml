@@ -116,7 +116,8 @@ jobs:
 
   browser:
     name: Browser UI (${{ matrix.engine }})
-    runs-on: ubuntu-latest
+    # Playwright 1.48's system dependencies target Ubuntu 24.04.
+    runs-on: ubuntu-24.04
     needs: [ docker ]
     strategy:
       fail-fast: false
