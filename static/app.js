@@ -64,7 +64,10 @@
 
   function addItem(file) {
     var item = { file: file, state: 'waiting', hash: null };
-    var bar = PB.el('progress', { max: '100', value: '0' });
+    // A div bar sized through the CSSOM: <progress> makes WebKit report CSP
+    // violations for its internal stylesheet.
+    var fill = PB.el('i');
+    var bar = PB.el('div', { class: 'bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100' }, [fill]);
     var stateEl = PB.el('span', { class: 'qstate', text: PB.size(file.size) });
     var rm = PB.el('button', { class: 'qremove', type: 'button', 'aria-label': '移除', text: '✕',
       onclick: function () {
@@ -75,7 +78,7 @@
       } });
     item.li = PB.el('li', null, [PB.el('span', { class: 'qname', text: file.name }),
       PB.el('span', null, [stateEl, rm]), bar]);
-    item.bar = bar; item.stateEl = stateEl; item.rm = rm;
+    item.bar = bar; item.fill = fill; item.stateEl = stateEl; item.rm = rm;
     queue.push(item);
     queueEl.appendChild(item.li);
   }
@@ -153,7 +156,8 @@
     var url = load(key), offset = 0;
     function progress(n) {
       var pct = file.size ? Math.min(100, Math.floor(n / file.size * 100)) : 100;
-      item.bar.value = pct;
+      item.fill.style.width = pct + '%';
+      item.bar.setAttribute('aria-valuenow', String(pct));
       item.stateEl.textContent = pct + '%';
     }
     function begin() {
@@ -203,7 +207,7 @@
       store(key, null);
       if (!hash) throw httpError(500, '上传未完成');
       item.hash = hash; item.state = 'done';
-      item.bar.value = 100; item.stateEl.textContent = '✓';
+      item.fill.style.width = '100%'; item.stateEl.textContent = '✓';
       return hash;
     });
   }
