@@ -497,13 +497,33 @@ static int iv_process_internal(VipsImage *source, const char *target_suffix,
     if (quality < 1) quality = 1;
     if (quality > 100) quality = 100;
 
-    /* 7. Encode. */
-    if (vips_image_write_to_buffer(final, target_suffix,
-            &result_buf, &result_len,
-            "Q", quality,
-            "strip", TRUE,         /* strip EXIF/metadata for privacy */
-            "interlace", TRUE,    /* progressive jpeg/png */
-            NULL) != 0) {
+    /* 7. Encode. Savers reject options they do not define, so pass only
+     * what each format supports. All savers accept "strip" (drop EXIF and
+     * other metadata for privacy). */
+    int enc_rc;
+    if (!strcmp(target_suffix, ".jpg") || !strcmp(target_suffix, ".jpeg")) {
+        enc_rc = vips_image_write_to_buffer(final, target_suffix,
+                &result_buf, &result_len,
+                "Q", quality, "strip", TRUE,
+                "interlace", TRUE,   /* progressive JPEG */
+                NULL);
+    } else if (!strcmp(target_suffix, ".png")) {
+        enc_rc = vips_image_write_to_buffer(final, target_suffix,
+                &result_buf, &result_len,
+                "strip", TRUE, "interlace", TRUE,
+                NULL);
+    } else if (!strcmp(target_suffix, ".webp") || !strcmp(target_suffix, ".avif")) {
+        enc_rc = vips_image_write_to_buffer(final, target_suffix,
+                &result_buf, &result_len,
+                "Q", quality, "strip", TRUE,
+                NULL);
+    } else {
+        enc_rc = vips_image_write_to_buffer(final, target_suffix,
+                &result_buf, &result_len,
+                "strip", TRUE,
+                NULL);
+    }
+    if (enc_rc != 0) {
         iv_capture_error(err, errlen);
         goto cleanup;
     }
