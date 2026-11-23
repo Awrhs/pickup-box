@@ -52,7 +52,20 @@ sqlite3_int64 sqlite3_last_insert_rowid(sqlite3 *db);
 int sqlite3_changes(sqlite3 *db);
 ]]
 
-local sqlite = ffi.load("sqlite3")
+-- Runtime images usually ship only the SONAME (libsqlite3.so.0); the
+-- unversioned libsqlite3.so symlink comes with -dev packages.
+local sqlite
+do
+    local errs = {}
+    for _, name in ipairs({ "sqlite3", "libsqlite3.so.0" }) do
+        local ok, lib = pcall(ffi.load, name)
+        if ok then sqlite = lib break end
+        errs[#errs + 1] = tostring(lib)
+    end
+    if not sqlite then
+        error("cannot load libsqlite3: " .. table.concat(errs, "; "))
+    end
+end
 
 -- Result codes
 local OK            = 0

@@ -63,11 +63,12 @@ describe("image.util", function()
         assert.equal(2, p.blur)
         assert.falsy(err)
     end)
-    it("rejects out-of-range width", function()
+    it("clamps out-of-range width to the 10000px maximum", function()
+        -- parse_int clamps rather than rejects; non-numeric input is rejected.
         _G.ngx.req.get_uri_args = function() return { w = "999999" } end
         local p, err = util.parse_transform_args()
-        assert.falsy(p)
-        assert.truthy(err)
+        assert.falsy(err)
+        assert.equal(10000, p.width)
     end)
     it("rejects unknown format", function()
         _G.ngx.req.get_uri_args = function() return { fmt = "bmp" } end

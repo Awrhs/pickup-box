@@ -79,7 +79,8 @@ local function emit_shared_dict(name)
     local d = ngx.shared[name]
     if not d then return end
     ngx.say(PREFIX, "shared_dict_capacity_bytes{name=\"", name, "\"} ", d:capacity())
-    ngx.say(PREFIX, "shared_dict_used_bytes{name=\"", name, "\"} ", d:used())
+    -- ngx.shared.DICT has capacity()/free_space(); there is no used().
+    ngx.say(PREFIX, "shared_dict_used_bytes{name=\"", name, "\"} ", d:capacity() - d:free_space())
 end
 
 local SHARED_DICTS = {

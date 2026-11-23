@@ -34,6 +34,8 @@ describe("download_guard signing", function()
         package.loaded["image.config"] = nil
         setenv("IMAGE_DOWNLOAD_SECRET", "test-secret-at-least-32-chars-xxxx")
         setenv("IMAGE_DOWNLOAD_SIGNED_URLS", "false")
+        assert.equal("test-secret-at-least-32-chars-xxxx", os.getenv("IMAGE_DOWNLOAD_SECRET"),
+                     "os.getenv stub not visible to modules")
         package.loaded["image.download_guard"] = nil
         guard = require "image.download_guard"
     end)
