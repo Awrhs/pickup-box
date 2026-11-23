@@ -54,7 +54,9 @@ function _M.serve_file(share, f)
     local path = blob_path(f)
     if not path then return gone() end
     local download = ngx.var.arg_dl == "1" or not sniff.INLINE[f.kind]
-    ngx.header["Content-Type"] = f.mime
+    -- Downloads are sent as application/octet-stream: some browsers (WebKit)
+    -- ignore "attachment" and render types they understand, e.g. text/plain.
+    ngx.header["Content-Type"] = download and "application/octet-stream" or f.mime
     ngx.header["Content-Disposition"] = _M.disposition(download and "attachment" or "inline", f.name)
     -- Inline media are rendered in a sandbox; attachments are never
     -- rendered, and WebKit refuses to download a sandboxed response.

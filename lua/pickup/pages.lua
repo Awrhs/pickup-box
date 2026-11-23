@@ -162,7 +162,7 @@ local function file_tile(share, f, t)
     local q = "?t=" .. ngx.escape_uri(t)
     local name = esc(f.name)
     local size = _M.human_size(f.size_bytes)
-    local dl = '<a class="dl" href="' .. base .. q .. '&amp;dl=1">下载</a>'
+    local dl = '<a class="dl" href="' .. base .. q .. '&amp;dl=1" download="' .. name .. '">下载</a>'
     if f.kind == "image" then
         return '<li class="tile"><a class="thumb" href="' .. base .. '/thumb' .. q .. '&amp;s=l">'
             .. '<img src="' .. base .. '/thumb' .. q .. '&amp;s=s" loading="lazy" alt="' .. name .. '"></a>'
@@ -233,7 +233,7 @@ function _M.pickup(slug)
         '<section class="pickup"><h1>', esc(title), '</h1>',
         '<p class="meta">', esc(table.concat(meta, " · ")), '</p>', wechat,
         '<p><a class="btn primary" href="/p/', share.slug, '/zip?t=', ngx.escape_uri(t),
-        '">全部下载（zip）</a></p>',
+        '" download>全部下载（zip）</a></p>',
         '<ul class="grid">', table.concat(tiles), '</ul></section>',
     })
     return send(200, layout(title .. " - " .. pconfig.site_name, body))
