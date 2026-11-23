@@ -65,6 +65,7 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN addgroup -S pickup && adduser -S -D -H -G pickup pickup \
     && mkdir -p /data/images/orig /data/images/cache /data/images/tmp /var/log/nginx \
     && chown -R pickup:pickup /data \
+    && touch /usr/local/openresty/nginx/conf/realip.conf \
     && ln -sf /dev/stdout /var/log/nginx/access.log \
     && ln -sf /dev/stderr /var/log/nginx/error.log \
     && chmod 0755 /usr/local/bin/docker-entrypoint.sh

@@ -194,6 +194,9 @@ jobs:
         run: test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost/)" = 308
       - name: End-to-end over HTTPS through Caddy
         run: python3 -I tools/e2e.py --base https://localhost --insecure --password ci-deploy-password-123
+      - name: Real client IP behind the proxy (nginx realip)
+        working-directory: ${{ runner.temp }}/pb
+        run: docker compose exec -T pickup-box grep -q "real_ip_header X-Forwarded-For" /usr/local/openresty/nginx/conf/realip.conf
       - name: Concurrency stress through Caddy
         run: python3 -I tools/stress.py --base https://localhost --insecure --password ci-deploy-password-123
       - name: No worker crashes or critical errors
