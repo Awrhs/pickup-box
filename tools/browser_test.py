@@ -55,9 +55,19 @@ def main():
         page = sender_ctx.new_page()
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
-        # Expected HTTP errors (the deliberate wrong password) are not JS bugs.
-        page.on("console", lambda m: m.type == "error" and not re.search(
-            r"Failed to load resource: .*status of (401|404|410)", m.text) and errors.append(m.text))
+        # Not JS bugs: expected HTTP errors (the deliberate wrong password),
+        # and WebKit's CSP report for the user-agent stylesheets of native
+        # form controls (<select>, <input type=file>), which render fine.
+        def on_console(m):
+            if m.type != "error":
+                return
+            if re.search(r"Failed to load resource: .*status of (401|404|410)", m.text):
+                return
+            if args.browser == "webkit" and m.text.startswith("Refused to apply a stylesheet"):
+                print("  (webkit UA stylesheet CSP report at", m.location, ")")
+                return
+            errors.append(m.text)
+        page.on("console", on_console)
 
         # ---- sender: log in --------------------------------------------
         page.goto(args.base + "/")
