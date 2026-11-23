@@ -141,9 +141,12 @@ jobs:
       - name: Browser test (official Playwright image, browsers preinstalled)
         run: |
           docker run --rm --network host -v "$PWD":/w -w /w \
-            mcr.microsoft.com/playwright/python:v1.48.0-noble \
-            python tools/browser_test.py --base http://127.0.0.1 \
-              --password ci-browser-password-123 --shots browser-shots --browser ${{ matrix.engine }}
+            mcr.microsoft.com/playwright/python:v1.48.0-noble sh -euc '
+              python -m venv /tmp/venv
+              /tmp/venv/bin/pip install -q playwright==1.48.0
+              /tmp/venv/bin/python tools/browser_test.py --base http://127.0.0.1 \
+                --password ci-browser-password-123 --shots browser-shots --browser ${{ matrix.engine }}
+            '
       - name: Screenshots
         if: always()
         uses: actions/upload-artifact@v4
