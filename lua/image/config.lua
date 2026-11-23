@@ -60,20 +60,23 @@ end
 --   "<name>:<secret>:<role>:<quota>:<expires_unix>"
 -- role/quota may be empty; an empty role defaults to "upload".
 local function parse_entry(entry)
-    local name, secret, role, quota, expires =
-        entry:match("^([^:]+):([^:]*):([^:]*):(%d*):?(%d*)$")
-    if not name then
-        name, secret = entry:match("^([^:]+):([^:]+)$")
-        if name then
-            return name, secret, "upload", nil, nil
-        end
+    local parts = {}
+    for field in (entry .. ":"):gmatch("([^:]*):") do
+        parts[#parts + 1] = field
+    end
+    if #parts == 1 then
         return "default", entry, "upload", nil, nil
     end
-    if role == "" then role = "upload" end
-    if quota == "" then quota = nil end
-    if expires == "" then expires = nil end
+    if #parts > 5 or parts[1] == "" or parts[2] == "" then
+        return nil  -- malformed; caller skips it
+    end
+    local name, secret, role, quota, expires = parts[1], parts[2], parts[3], parts[4], parts[5]
+    if not role or role == "" then role = "upload" end
+    if quota == "" or (quota and not quota:match("^%d+$")) then quota = nil end
+    if expires == "" or (expires and not expires:match("^%d+$")) then expires = nil end
     return name, secret, role, quota, expires
 end
+_M._parse_key_entry = parse_entry  -- exposed for unit tests
 
 do
     local raw = os.getenv("IMAGE_API_KEYS") or ""

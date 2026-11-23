@@ -280,6 +280,11 @@ function _M.recent_bandwidth(hours)
     return bytes, reqs
 end
 
+-- Override config at runtime (tests). Mirrors rate_limit.set_config.
+function _M.set_config(overrides)
+    for k, v in pairs(overrides) do CFG[k] = v end
+end
+
 -- Expose config for /admin/stats and tests.
 function _M.config()
     return {
