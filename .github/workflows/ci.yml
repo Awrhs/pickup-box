@@ -31,7 +31,7 @@ jobs:
       - name: JavaScript syntax
         run: for f in static/*.js; do node --check "$f"; done
       - name: Python syntax
-        run: python3 -m py_compile tools/e2e.py tools/gen_env.py tools/browser_test.py
+        run: python3 -m py_compile tools/e2e.py tools/gen_env.py tools/browser_test.py tools/stress.py
       - name: nginx env declarations match os.getenv() calls
         run: python3 -I tools/gen_env.py --check
       - name: No leftover references to the old project name
@@ -100,6 +100,11 @@ jobs:
         run: |
           python3 -I tools/e2e.py --base http://127.0.0.1 --password ci-owner-password-123 \
             --friend friend:ci-friend-password-123 --short-expiry --destructive
+      - name: No worker crashes or critical errors
+        run: |
+          if grep -E "exited on signal|\[alert\]|\[crit\]|\[emerg\]|database is locked" logs/error.log; then
+            echo "server logged crashes or critical errors"; exit 1
+          fi
       - name: Metrics from inside the container
         run: docker compose exec -T pickup-box wget -qO- http://127.0.0.1/metrics | grep -q '^pickupbox_image_uploads_total'
       - name: Garbage collection (fast GC settings)
@@ -185,6 +190,14 @@ jobs:
         run: test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost/)" = 308
       - name: End-to-end over HTTPS through Caddy
         run: python3 -I tools/e2e.py --base https://localhost --insecure --password ci-deploy-password-123
+      - name: Concurrency stress through Caddy
+        run: python3 -I tools/stress.py --base https://localhost --insecure --password ci-deploy-password-123
+      - name: No worker crashes or critical errors
+        working-directory: ${{ runner.temp }}/pb
+        run: |
+          if docker compose logs pickup-box | grep -E "exited on signal|\[alert\]|\[crit\]|\[emerg\]|database is locked"; then
+            echo "server logged crashes or critical errors"; exit 1
+          fi
       - name: Logs
         if: always()
         working-directory: ${{ runner.temp }}/pb

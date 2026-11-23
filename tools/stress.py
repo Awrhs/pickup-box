@@ -26,9 +26,8 @@ def main():
     ap.add_argument("--readers", type=int, default=40)
     args = ap.parse_args()
 
-    t = e2e.T(argparse.Namespace(base=args.base, insecure=args.insecure, friend=None,
-                                 short_expiry=False, gc=False, destructive=False))
-    t.pw = args.password
+    t = e2e.T(argparse.Namespace(base=args.base, insecure=args.insecure, password=args.password,
+                                 friend=None, short_expiry=False, gc=False, destructive=False))
     problems = []
 
     # 1. Parallel uploads: mixed sizes, chunked, some sharing identical content.
@@ -77,7 +76,7 @@ def main():
             return st == 200 and body[:4] == b"RIFF", f"thumb {st}"
         if kind == 2:
             st, hd, body = t.c.req("GET", f"/p/{slug}/f/{f['seq']}?{q}", headers={"Range": "bytes=0-99"})
-            return st in (200, 206) and len(body) == min(100, f["size"]) or st == 200, f"range {st}"
+            return st == 206 and len(body) == min(100, f["size"]), f"range {st}"
         if kind == 3 and i % 10 == 3:
             st, hd, body = t.c.req("GET", f"/p/{slug}/zip?{q}")
             return st == 200 and len(body) == int(hd.get("content-length", -1)), f"zip {st}"
