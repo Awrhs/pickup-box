@@ -154,6 +154,12 @@ local function audit_file()
     return audit_fp
 end
 
+local function client_ip_safe()
+    local ok, m = pcall(require, "image.client_ip")
+    if ok then return m.get() end
+    return ngx.var.remote_addr or "unknown"
+end
+
 local cjson
 function _M.audit(event, data)
     data = data or {}
@@ -175,11 +181,6 @@ function _M.audit(event, data)
     logger.warn("audit_" .. event, data)
 end
 
-function client_ip_safe()
-    local ok, m = pcall(require, "image.client_ip")
-    if ok then return m.get() end
-    return ngx.var.remote_addr or "unknown"
-end
 
 -- Early reject based on Content-Length. Returns true if the request was
 -- terminated (caller should stop processing).

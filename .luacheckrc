@@ -1,25 +1,21 @@
--- Luacheck configuration for the gateway.
--- Run with: luacheck lua/
-std = "min+busted"
+-- Luacheck configuration. Run with: luacheck lua spec
+std = "ngx_lua"
 
--- Allow OpenResty globals that appear across the codebase.
-read_globals = {
-    "ngx", "ndk", "ffi",
-    "describe", "it", "before_each", "after_each", "spy", "mock", "stub",
+-- FFI-heavy modules and tests use these.
+read_globals = { "ffi" }
+
+files["spec/**/*.lua"] = {
+    std = "+busted",
+    globals = { "ngx", "os" },  -- specs stub ngx and os.getenv
 }
 
--- Per-directory overrides
-files = {
-    "lua/**/*.lua",
-    "spec/**/*.lua",
-}
+max_line_length = 120
 
--- Reasonable style limits; silence noise on long lines.
-max_line_length = 110
+-- Enforced: undefined globals (113), setting globals (111/112), and syntax.
+-- Not enforced yet (tech debt, tracked in PROGRESS.md): unused locals/args/
+-- values (211/212/213/311) and shadowing (421/431).
 ignore = {
-    "631",  -- line is too long
-    "411",  -- variable was previously defined as an argument
+    "631",                      -- line too long
+    "211", "212", "213", "311", -- unused variable / argument / loop var / value
+    "421", "431",               -- shadowing
 }
-
--- Don't enforce unused warnings on ngx.ctx fields or module tables.
-globals = { "ngx" }

@@ -65,6 +65,32 @@ CREATE TABLE IF NOT EXISTS slugs (
 CREATE INDEX IF NOT EXISTS idx_slugs_hash ON slugs(hash);
 ]]
 
+-- tus 1.0 upload sessions.
+local SCHEMA_TUS = [[
+CREATE TABLE IF NOT EXISTS tus_sessions (
+    id             TEXT PRIMARY KEY,
+    upload_length  INTEGER NOT NULL,
+    offset         INTEGER NOT NULL DEFAULT 0,
+    metadata       TEXT NOT NULL DEFAULT '',
+    owner          TEXT,
+    owner_node     TEXT NOT NULL DEFAULT '',
+    created_at     INTEGER NOT NULL,
+    expires_at     INTEGER NOT NULL,
+    state          TEXT NOT NULL DEFAULT 'active'
+);
+]]
+
+-- Per-day download stats (aggregated from shared dict by stats_flush.lua).
+local SCHEMA_STATS = [[
+CREATE TABLE IF NOT EXISTS stats_daily (
+    day   INTEGER NOT NULL,
+    hash  TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    bytes INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(day, hash)
+);
+]]
+
 local LOCK_TIMEOUT = 10  -- seconds to wait for the metadata write lock
 
 -- Open the DB (idempotent). Uses a module-level semaphore so that if several
@@ -150,31 +176,6 @@ local function with_write_lock(fn)
     return select(2, unpack(results))
 end
 
--- tus 1.0 upload sessions (P6).
-local SCHEMA_TUS = [[
-CREATE TABLE IF NOT EXISTS tus_sessions (
-    id             TEXT PRIMARY KEY,
-    upload_length  INTEGER NOT NULL,
-    offset         INTEGER NOT NULL DEFAULT 0,
-    metadata       TEXT NOT NULL DEFAULT '',
-    owner          TEXT,
-    owner_node     TEXT NOT NULL DEFAULT '',
-    created_at     INTEGER NOT NULL,
-    expires_at     INTEGER NOT NULL,
-    state          TEXT NOT NULL DEFAULT 'active'
-);
-]]
-
--- Per-day download stats (aggregated from shared dict by stats_flush.lua).
-local SCHEMA_STATS = [[
-CREATE TABLE IF NOT EXISTS stats_daily (
-    day   INTEGER NOT NULL,
-    hash  TEXT NOT NULL,
-    count INTEGER NOT NULL DEFAULT 0,
-    bytes INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY(day, hash)
-);
-]]
 
 -- Start-of-window timestamp. We use a rolling window of
 -- config.quota_window_days days rather than calendar months so it is

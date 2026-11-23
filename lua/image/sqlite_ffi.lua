@@ -284,7 +284,7 @@ function db_mt:query_row(sql, ...)
     local rc = st:step()
     local row
     if rc == ROW then
-        _, row = st:row()
+        row = select(2, st:row())
     elseif rc ~= DONE and rc ~= OK then
         st:finalize()
         error("query_row failed: " .. errmsg(self._db), 2)

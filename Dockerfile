@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------- build stage ----------
-FROM openresty/openresty:1.21.4.1-alpine AS builder
+FROM openresty/openresty:1.21.4.1-alpine-fat AS builder
 
 # Build toolchain + dev headers needed to compile c/image_vips.c and install
 # OPM Lua rocks. None of these ship in the runtime image.
@@ -10,9 +10,7 @@ RUN apk add --no-cache \
         vips-dev vips-heif \
         sqlite-dev \
         pango-dev fontconfig-dev \
-    && opm get ledgetech/lua-resty-http \
-    && opm get openresty/lua-resty-string \
-    && opm get openresty/lua-resty-core
+    && opm get ledgetech/lua-resty-http
 
 WORKDIR /opt/pickup-box
 COPY c/ /opt/pickup-box/c/

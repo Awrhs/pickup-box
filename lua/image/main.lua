@@ -590,7 +590,7 @@ end
 -- grid of the hottest images. Rendered in the same style as /admin.
 function _M.analytics()
     _M.init()
-    require_admin()
+    apikey.require_admin()
     local days = 30
     local series = metadata.stats_series(days)
     local hot = metadata.hot_images(days, 30)

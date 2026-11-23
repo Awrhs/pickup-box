@@ -2,6 +2,13 @@
 -- detection. Run with: busted spec/unit/download_guard_spec.lua
 describe("download_guard signing", function()
     local guard
+    local env = {}
+    local real_getenv = os.getenv
+    local function setenv(k, v) env[k] = v end
+    os.getenv = function(k)
+        if env[k] ~= nil then return env[k] end
+        return real_getenv(k)
+    end
 
     before_each(function()
         _G.ngx = {
@@ -25,8 +32,8 @@ describe("download_guard signing", function()
             incr = function() return 0 end,
         }
         package.loaded["image.config"] = nil
-        os.setenv("IMAGE_DOWNLOAD_SECRET", "test-secret-at-least-32-chars-xxxx")
-        os.setenv("IMAGE_DOWNLOAD_SIGNED_URLS", "false")
+        setenv("IMAGE_DOWNLOAD_SECRET", "test-secret-at-least-32-chars-xxxx")
+        setenv("IMAGE_DOWNLOAD_SIGNED_URLS", "false")
         package.loaded["image.download_guard"] = nil
         guard = require "image.download_guard"
     end)
@@ -47,7 +54,7 @@ describe("download_guard signing", function()
     end)
 
     it("returns nil when no secret is configured", function()
-        os.setenv("IMAGE_DOWNLOAD_SECRET", "")
+        setenv("IMAGE_DOWNLOAD_SECRET", "")
         package.loaded["image.download_guard"] = nil
         local g = require "image.download_guard"
         local qs, err = g.sign_path("/i/x.jpg", 60)
