@@ -84,7 +84,10 @@
 - [x] `deploy/docker-compose.yml` + `Caddyfile`（自动 HTTPS）+ `install.sh`（一行命令安装）
 - [x] 多架构镜像发布到 ghcr.io（公开可匿名拉取），发布后在 amd64 与 arm64 上实际运行验证
 - [x] README（部署 3 步、配置、使用、运维）、docs/API.md、SECURITY.md、CLAUDE.md、CONTRIBUTING.md
-- [ ] 打版本标签（v0.1.0）并让 compose 默认使用固定版本
+- [x] 无域名（纯 HTTP、用 IP 试用）模式、镜像加速地址（`PICKUP_IMAGE`/`CADDY_IMAGE`）、常见问题排查
+- [x] Caddy 后面按真实客户端 IP 限流（nginx realip，仅在 `TRUST_X_FORWARDED_FOR=true` 时启用）
+- [ ] 打版本标签（v0.1.0）并让 compose 默认使用固定版本（目前 `latest` 只在 main 分支全部测试通过后才发布）
+- [ ] 用真实域名在真实服务器上走一遍 Let's Encrypt 签证书（CI 里用的是 Caddy 内置 CA 签 `localhost`）
 
 ## Phase 8：验证
 
