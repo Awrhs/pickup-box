@@ -6,7 +6,10 @@ import pathlib, re, sys
 root = pathlib.Path(__file__).resolve().parent.parent
 names = set()
 for f in (root / "lua").rglob("*.lua"):
-    names.update(re.findall(r'os\.getenv\("([A-Z0-9_]+)"\)', f.read_text(encoding="utf-8")))
+    text = f.read_text(encoding="utf-8")
+    names.update(re.findall(r'os\.getenv\("([A-Z0-9_]+)"\)', text))
+    # Helper wrappers such as env("NAME") / size_env("NAME", ...) in config modules.
+    names.update(re.findall(r'\b(?:env|size_env|dur_env|int_env)\("([A-Z0-9_]+)"', text))
 block = "".join(f"env {n};\n" for n in sorted(names))
 
 conf_path = root / "conf" / "nginx.conf"

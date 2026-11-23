@@ -10,6 +10,7 @@
 --   POST   /api/shares/<id>/extend      {expires_in}
 --   POST   /api/shares/<id>/preview     owner link that does not count a visit
 --   DELETE /api/shares/<id>             same as revoke
+--   GET    /api/blobs/<sha256>          (admin) is this blob stored?
 local cjson = require "cjson.safe"
 local apikey = require "image.apikey"
 local upload = require "image.upload"
@@ -172,6 +173,14 @@ function _M.dispatch()
         if method == "POST" then return _M.create_share() end
         if method == "GET" then return _M.list_shares() end
         return fail(405, "method_not_allowed")
+    end
+    local blob = uri:match("^/api/blobs/(%x+)$")
+    if blob and method == "GET" then
+        apikey.require_admin()
+        local row = metadata.get_image(blob:lower())
+        if not row then return fail(404, "not_found") end
+        return json(200, { hash = row.hash, size = row.size_bytes, kind = row.kind,
+                           uploaded_at = row.uploaded_at })
     end
     local id, action = uri:match("^/api/shares/(%d+)/?(%a*)$")
     if id then return _M.share_action(id, action ~= "" and action or nil) end

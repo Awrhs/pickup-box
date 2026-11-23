@@ -428,14 +428,18 @@ class T:
         h, st, _ = self.tus_upload(data, "gc.bin")
         st, s = self.share([(h, "gc.bin")], expires_in=3600)
         self.api("POST", f"/api/shares/{s['id']}/revoke")
+        st, _ = self.api("GET", f"/api/blobs/{h}")
+        check("blob present before GC", st == 200)
         gone = False
         for _ in range(40):
-            st, _ = self.share([(h, "gc.bin")], expires_in=3600)
-            if st == 409:
+            st, _ = self.api("GET", f"/api/blobs/{h}")
+            if st == 404:
                 gone = True
                 break
             time.sleep(1)
         check("GC deletes blobs no live share references", gone)
+        st, _ = self.share([(h, "gc.bin")], expires_in=3600)
+        check("sharing a collected blob is refused", st == 409)
         h2, st, _ = self.tus_upload(data, "gc.bin")
         check("re-upload after GC works", h2 == h)
         st, s = self.share([(h2, "gc.bin")], expires_in=3600)
