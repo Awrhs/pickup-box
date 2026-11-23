@@ -336,14 +336,15 @@ function _M.serve(hash, requested_ext)
         return
     end
 
-    local out_ext, out_mime
-    if out_fmt then
-        out_ext, out_mime = format_info(out_fmt)
-        if not out_ext then util.bad_request("unsupported format") end
-    else
-        out_ext = meta.orig_ext
-        out_mime = meta.mime
+    -- No explicit or negotiated format: re-encode in the original's format.
+    -- (Leaving out_fmt nil gave render() an empty candidate list, so every
+    -- resize without fmt= or a webp/avif Accept header failed.)
+    if not out_fmt then
+        out_fmt = util.canonical_format(meta.orig_ext)
+        if not out_fmt then util.bad_request("unsupported source format") end
     end
+    local out_ext, out_mime = format_info(out_fmt)
+    if not out_ext then util.bad_request("unsupported format") end
 
     local ckey = cache_key(params, out_fmt)
     local l1key = hash .. ":" .. ckey
