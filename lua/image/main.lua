@@ -298,7 +298,11 @@ function _M.sign()
     for _, k in ipairs(signable) do
         if args[k] ~= nil then params[k] = args[k] end
     end
-    local qs = download_guard.sign_path(path, ttl, params)
+    local qs, serr = download_guard.sign_path(path, ttl, params)
+    if not qs then
+        util.bad_request("URL signing is not configured (set IMAGE_DOWNLOAD_SECRET): "
+                         .. tostring(serr))
+    end
     local base = ngx.var.scheme .. "://" .. ngx.var.host
     ngx.header.content_type = "application/json"
     local cjson = require "cjson.safe"

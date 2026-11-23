@@ -60,13 +60,17 @@ end
 -- module-level function; all args must be transferable (string/number/table).
 local function run_offloaded(fn_name, ...)
     if has_thread_api then
-        local ok, result = pcall(ngx.run_worker_thread,
-                                 thread_pool, VMOD, fn_name, ...)
-        if ok then
-            return result
+        -- ngx.run_worker_thread returns (thread_ok, ret1, ret2, ...); the
+        -- outer pcall adds its own status in front.
+        local called, thread_ok, result, err = pcall(ngx.run_worker_thread,
+                                                     thread_pool, VMOD, fn_name, ...)
+        if called and thread_ok then
+            return result, err
         end
-        -- Environmental failure (e.g. unknown thread pool) -> inline fallback.
-        logger.warn("worker_thread_fallback", { error = tostring(result) })
+        -- Environmental failure (e.g. unknown thread pool, queue full) or an
+        -- error inside the thread -> inline fallback.
+        logger.warn("worker_thread_fallback",
+                    { error = tostring(called and result or thread_ok) })
     end
     return vips[fn_name](...)
 end

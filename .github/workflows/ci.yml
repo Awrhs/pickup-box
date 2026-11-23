@@ -77,6 +77,7 @@ jobs:
         run: |
           cat > .env <<EOF
           IMAGE_API_KEYS=uploader:ci-upload-key-0123456789abcdef:upload,admin:ci-admin-key-0123456789abcdef:admin
+          IMAGE_DOWNLOAD_SECRET=ci-only-download-signing-secret-0123456789
           EOF
           mkdir -p logs
           docker compose up -d --build
