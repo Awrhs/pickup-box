@@ -33,14 +33,17 @@ status_of() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
-# Canonical 1x1 white JPEG (widely-used fixture; vips can decode it).
-base64 -d > "$tmpdir/pixel.jpg" <<'EOF'
-/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a
-HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIy
-MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIA
-AhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAr/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAA
-AAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AL+AB//Z
-EOF
+# Generate a valid 16x16 RGB PNG with the standard library only.
+python3 - "$tmpdir/pixel.png" <<'PY'
+import struct, sys, zlib
+w = h = 16
+raw = b"".join(b"\x00" + b"".join(bytes([x * 16, y * 16, 128]) for x in range(w)) for y in range(h))
+def chunk(t, d):
+    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) \
+    + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+open(sys.argv[1], "wb").write(png)
+PY
 
 echo "== health =="
 check "/healthz returns 200"  test "$(status_of "$BASE_URL/healthz")" = 200
@@ -49,27 +52,27 @@ check "/metrics returns 200"  test "$(status_of "$BASE_URL/metrics")"  = 200
 
 echo "== upload =="
 upload_json=$(curl -s -X POST -H "Authorization: Bearer $API_KEY" \
-    -F "file=@$tmpdir/pixel.jpg;filename=pixel.jpg" "$BASE_URL/upload")
+    -F "file=@$tmpdir/pixel.png;filename=pixel.png" "$BASE_URL/upload")
 echo "$upload_json" | jq .
 hash=$(echo "$upload_json" | jq -r .hash)
 test -n "$hash" -a "$hash" != null
 
 echo "== serve =="
-check "original returns 200"  test "$(status_of "$BASE_URL/i/$hash.jpg")" = 200
-check "webp  derivative 200"  test "$(status_of "$BASE_URL/i/$hash.jpg?w=100&fmt=webp")" = 200
-check "thumb jpeg     200"    test "$(status_of "$BASE_URL/i/$hash.jpg?w=50")" = 200
-etag=$(curl -s -D - -o /dev/null "$BASE_URL/i/$hash.jpg?w=100" | awk -F': *' 'tolower($1)=="etag"{gsub("\r","",$2);print $2}')
+check "original returns 200"  test "$(status_of "$BASE_URL/i/$hash.png")" = 200
+check "webp  derivative 200"  test "$(status_of "$BASE_URL/i/$hash.png?w=100&fmt=webp")" = 200
+check "thumb jpeg     200"    test "$(status_of "$BASE_URL/i/$hash.png?w=50")" = 200
+etag=$(curl -s -D - -o /dev/null "$BASE_URL/i/$hash.png?w=100" | awk -F': *' 'tolower($1)=="etag"{gsub("\r","",$2);print $2}')
 check "etag returned" test -n "$etag"
 if [ -n "$etag" ]; then
-    check "304 on If-None-Match" test "$(status_of -H "If-None-Match: $etag" "$BASE_URL/i/$hash.jpg?w=100")" = 304
+    check "304 on If-None-Match" test "$(status_of -H "If-None-Match: $etag" "$BASE_URL/i/$hash.png?w=100")" = 304
 fi
 check "info returns 200" test "$(status_of "$BASE_URL/i/$hash/info")" = 200
-check "HEAD returns 200"  test "$(curl -s -I -o /dev/null -w '%{http_code}' "$BASE_URL/i/$hash.jpg")" = 200
+check "HEAD returns 200"  test "$(curl -s -I -o /dev/null -w '%{http_code}' "$BASE_URL/i/$hash.png")" = 200
 
 echo "== self-service =="
 check "/me/images 200 with key" test "$(status_of -H "Authorization: Bearer $API_KEY" "$BASE_URL/me/images")" = 200
 check "/me/images 401 no key"   test "$(status_of "$BASE_URL/me/images")" = 401
-check "/sign returns 200"       test "$(status_of -H "Authorization: Bearer $API_KEY" "$BASE_URL/sign?path=/i/$hash.jpg&w=100")" = 200
+check "/sign returns 200"       test "$(status_of -H "Authorization: Bearer $API_KEY" "$BASE_URL/sign?path=/i/$hash.png&w=100")" = 200
 
 echo "== admin =="
 check "/admin       401 no key" test "$(status_of "$BASE_URL/admin")" = 401
@@ -80,7 +83,7 @@ check "/admin       200 admin"  test "$(status_of -H "Authorization: Bearer $ADM
 echo "== delete =="
 check "DELETE 204 for admin" \
     test "$(status_of -X DELETE -H "Authorization: Bearer $ADMIN_KEY" "$BASE_URL/i/$hash")" = 204
-check "subsequent GET returns 404" test "$(status_of "$BASE_URL/i/$hash.jpg")" = 404
+check "subsequent GET returns 404" test "$(status_of "$BASE_URL/i/$hash.png")" = 404
 
 echo
 echo "Result: $pass passed, $fail failed"

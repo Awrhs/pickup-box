@@ -38,11 +38,13 @@ describe("download_guard signing", function()
         -- verification path is enforce(); re-implement verification in terms
         -- of the public sign_path and the returned qs so we can assert the
         -- signature covers transform params.
-        local e, s, w, fmt = qs:match("e=(%d+)&s=(%x+)&w=(%d+)&fmt=(%w+)")
+        -- Signed params are emitted in sorted order (fmt before w).
+        local e, s = qs:match("^e=(%d+)&s=(%x+)&")
         assert.equal("1700003600", e)
-        assert.equal("800", w)
-        assert.equal("webp", fmt)
         assert.equal(32, #s)
+        assert.truthy(qs:match("&fmt=webp"))
+        assert.truthy(qs:match("&w=800"))
+        assert.truthy(qs:find("fmt=webp", 1, true) < qs:find("w=800", 1, true))
     end)
 
     it("returns nil when no secret is configured", function()
