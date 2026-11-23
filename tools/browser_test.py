@@ -91,6 +91,9 @@ def main():
         rec_ctx = browser.new_context(**p.devices["Pixel 7"], accept_downloads=True)
         rp = rec_ctx.new_page()
         rp.on("pageerror", lambda e: errors.append(str(e)))
+        rp.on("response", lambda r: "/p/" in r.url and print(
+            "  response", r.status, r.url.split("?")[0], r.headers.get("content-type"),
+            r.headers.get("content-disposition")))
         rp.goto(args.base + "/")
         rp.fill("input[name=code]", code)
         rp.click("#pickup button")
@@ -114,8 +117,13 @@ def main():
         print("zip ok:", names)
 
         # Single-file download keeps the UTF-8 name.
-        with rp.expect_download() as dl2:
-            rp.locator(".tile", has_text="note.txt").locator("a.dl").click()
+        try:
+            with rp.expect_download(timeout=15_000) as dl2:
+                rp.locator(".tile", has_text="note.txt").locator("a.dl").click()
+        except Exception:
+            rp.screenshot(path=f"{args.shots}/x-single-download-failed.png", full_page=True)
+            print("  page url after click:", rp.url)
+            raise
         assert dl2.value.suggested_filename == "note.txt", dl2.value.suggested_filename
 
         # ---- sender: manage the share on /me ------------------------------
