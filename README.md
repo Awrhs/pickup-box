@@ -30,6 +30,22 @@ curl -fsSL https://raw.githubusercontent.com/Awrhs/pickup-box/main/deploy/instal
 
 脚本会询问你的域名，自动生成一个上传密码并启动服务（HTTPS 证书由 Caddy 自动申请和续期）。完成后打开 `https://你的域名`，用显示的密码登录即可发送文件。
 
+### 服务器上已经有网站或代理（80/443 被占用）？
+
+如果服务器上已经运行着 Caddy、nginx、宝塔面板或代理脚本，安装脚本会检测到端口被占用并停下，不会影响它们。此时改用“接入已有反向代理”模式：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Awrhs/pickup-box/main/deploy/install.sh \
+  | PICKUP_MODE=proxy PICKUP_DOMAIN=files.example.com sh
+```
+
+pickup-box 只监听本机 `127.0.0.1:18080`，并限制内存占用（默认 512 MB），不会抢占其他服务的资源。脚本会生成 `caddy-site.conf`（Caddy 站点文件）和 `nginx-site.conf`（nginx 配置片段），并打印下一步命令。例如服务器上的 Caddy 带有 `/etc/caddy/sites/` 目录时（很多一键脚本都是这样）：
+
+```bash
+sudo cp pickup-box/caddy-site.conf /etc/caddy/sites/files.example.com.conf
+sudo systemctl restart caddy
+```
+
 <details>
 <summary>不想用一键脚本？手动部署也只需要 2 个环境变量</summary>
 

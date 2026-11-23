@@ -1,0 +1,25 @@
+# pickup-box behind a reverse proxy you already run (Caddy, nginx, a panel's
+# web server...). It only listens on 127.0.0.1:${PICKUP_PORT}; your proxy
+# terminates HTTPS for your domain and forwards to it. deploy/install.sh with
+# PICKUP_MODE=proxy writes this file plus ready-to-use Caddy/nginx snippets.
+services:
+  pickup-box:
+    image: ${PICKUP_IMAGE:-ghcr.io/awrhs/pickup-box}:${PICKUP_VERSION:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Requests arrive from your proxy, which sets X-Forwarded-For.
+      TRUST_X_FORWARDED_FOR: "true"
+      IMAGE_TRUSTED_PROXY_HOPS: "1"
+    ports:
+      - "127.0.0.1:${PICKUP_PORT:-18080}:80"
+    volumes:
+      - pickup-data:/data
+    # Keep image processing from starving other services on small servers.
+    mem_limit: ${PICKUP_MEM_LIMIT:-512m}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  pickup-data:
