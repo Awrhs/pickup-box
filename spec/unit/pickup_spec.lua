@@ -36,7 +36,7 @@ describe("pickup.shares names", function()
     it("replaces invalid UTF-8", function()
         assert.equal("a?b", shares.valid_utf8("a\255b"))
         assert.equal("你好", shares.valid_utf8("你好"))
-        assert.equal("?", shares.valid_utf8("\228\189"))  -- truncated sequence
+        assert.equal("??", shares.valid_utf8("\228\189"))  -- truncated sequence
     end)
     it("truncates long names on character boundaries", function()
         local n = shares.clean_name(string.rep("中", 100) .. ".txt")

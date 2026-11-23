@@ -82,6 +82,15 @@ static void iv_set_error(char *err, size_t errlen, const char *msg) {
     err[errlen - 1] = '\0';
 }
 
+/* Flatten alpha onto white. "background" is a VipsArrayDouble*, not a raw
+ * C array: passing (double[]){...} makes libvips dereference garbage. */
+static int iv_flatten_white(VipsImage *in, VipsImage **out) {
+    VipsArrayDouble *bg = vips_array_double_newv(3, 255.0, 255.0, 255.0);
+    int rc = vips_flatten(in, out, "background", bg, NULL);
+    vips_area_unref(VIPS_AREA(bg));
+    return rc;
+}
+
 /* Register a font file with the system fontconfig at runtime. */
 int iv_set_font_path(const char *path) {
     iv_init_once();
@@ -164,7 +173,7 @@ static VipsImage *iv_to_srgb(VipsImage *src, gboolean with_alpha) {
         }
     } else if (!with_alpha && rgb->Bands == 4) {
         VipsImage *opaque = NULL;
-        if (vips_flatten(rgb, &opaque, "background", (double[]){255,255,255}, NULL) == 0) {
+        if (iv_flatten_white(rgb, &opaque) == 0) {
             g_object_unref(rgb);
             rgb = opaque;
         }
@@ -482,10 +491,8 @@ static int iv_process_internal(VipsImage *source, const char *target_suffix,
     }
 
     /* 6. Flatten alpha for formats that cannot represent it (e.g. jpeg). */
-    if (!iv_suffix_supports_alpha(target_suffix)) {
-        if (vips_flatten(to_encode, &final,
-                "background", (double[]){255.0, 255.0, 255.0}, NULL) != 0) {
-            /* flatten may fail if there is no alpha; that's fine. */
+    if (!iv_suffix_supports_alpha(target_suffix) && vips_image_hasalpha(to_encode)) {
+        if (iv_flatten_white(to_encode, &final) != 0) {
             vips_error_clear();
             final = to_encode;
             g_object_ref(final);
@@ -643,14 +650,15 @@ int iv_probe_encode(const char *target_suffix) {
     iv_init_once();
     if (!target_suffix) return 0;
     /* Build a tiny 1x1 black image in memory and try to encode. */
-    VipsImage *test = vips_image_new_from_memory(
-            (unsigned char[3]){0,0,0}, 3, 1, 1, 3, VIPS_FORMAT_UCHAR);
+    static const unsigned char black[2 * 2 * 3] = { 0 };
+    VipsImage *test = vips_image_new_from_memory_copy(
+            black, sizeof(black), 2, 2, 3, VIPS_FORMAT_UCHAR);
     if (!test) return 0;
     void *buf = NULL;
     size_t len = 0;
     int ok = 0;
-    if (vips_image_write_to_buffer(test, target_suffix, &buf, &len,
-                                   "Q", 10, NULL) == 0) {
+    /* No saver-specific options: e.g. gifsave has no "Q" and would fail. */
+    if (vips_image_write_to_buffer(test, target_suffix, &buf, &len, NULL) == 0) {
         ok = 1;
         g_free(buf);
     }
