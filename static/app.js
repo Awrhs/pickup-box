@@ -64,8 +64,9 @@
 
   function addItem(file) {
     var item = { file: file, state: 'waiting', hash: null };
-    // A div bar sized through the CSSOM: <progress> makes WebKit report CSP
-    // violations for its internal stylesheet.
+    // A div bar whose width comes from classes p0..p20 (5% steps), so no
+    // inline styles are needed under the strict CSP (WebKit reports even
+    // the internal styles of <progress>).
     var fill = PB.el('i');
     var bar = PB.el('div', { class: 'bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100' }, [fill]);
     var stateEl = PB.el('span', { class: 'qstate', text: PB.size(file.size) });
@@ -156,7 +157,7 @@
     var url = load(key), offset = 0;
     function progress(n) {
       var pct = file.size ? Math.min(100, Math.floor(n / file.size * 100)) : 100;
-      item.fill.style.width = pct + '%';
+      item.fill.className = 'p' + Math.round(pct / 5);
       item.bar.setAttribute('aria-valuenow', String(pct));
       item.stateEl.textContent = pct + '%';
     }
@@ -207,7 +208,7 @@
       store(key, null);
       if (!hash) throw httpError(500, '上传未完成');
       item.hash = hash; item.state = 'done';
-      item.fill.style.width = '100%'; item.stateEl.textContent = '✓';
+      item.fill.className = 'p20'; item.stateEl.textContent = '✓';
       return hash;
     });
   }
