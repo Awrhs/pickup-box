@@ -210,6 +210,7 @@ function _M.create(subject, files, opts)
         end
         return nil, code, (code == "missing_file") and 409 or ((code == "db_error") and 500 or 503)
     end
+    require("common.metrics").incr("shares_created")
     return _M.get(res)
 end
 
@@ -224,7 +225,11 @@ function _M.consume_visit(share)
                    AND (max_visits=0 OR visit_count < max_visits)]], share.id, ngx.time())
         return db:changes()
     end)
-    return ok and changed == 1
+    if ok and changed == 1 then
+        require("common.metrics").incr("share_visits")
+        return true
+    end
+    return false
 end
 
 local function can_manage(share, subject)

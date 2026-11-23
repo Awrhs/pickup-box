@@ -31,6 +31,7 @@ function _M.fail(kind)
     local dict = ngx.shared.pickup_guard
     if not dict then return end
     local ip = client_ip.get()
+    require("common.metrics").incr(kind == "auth" and "auth_failures" or "pickup_code_failures")
     dict:incr(kind .. ":" .. ip, 1, 0, WINDOW[kind] or 3600)
     if kind == "code" then dict:incr("code:global", 1, 0, 3600) end
 end

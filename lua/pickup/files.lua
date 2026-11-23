@@ -63,7 +63,7 @@ function _M.serve_file(share, f)
     ngx.header["Content-Security-Policy"] = download and "default-src 'none'"
         or "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox"
     ngx.header["Cache-Control"] = "private, no-cache"
-    ngx.ctx.pb_bytes_file = true
+    require("common.metrics").incr("file_downloads")
     return ngx.exec(storage.to_internal_uri(path))
 end
 
@@ -114,6 +114,7 @@ function _M.serve_zip(share, files)
     ngx.header["Content-Length"] = tostring(plan.total)
     ngx.header["Cache-Control"] = "private, no-store"
     if ngx.req.get_method() == "HEAD" then return ngx.exit(200) end
+    require("common.metrics").incr("zip_downloads")
 
     local CHUNK = 256 * 1024
     local buf = require("ffi").new("char[?]", CHUNK)

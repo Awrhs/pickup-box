@@ -106,7 +106,11 @@ jobs:
             echo "server logged crashes or critical errors"; exit 1
           fi
       - name: Metrics from inside the container
-        run: docker compose exec -T pickup-box wget -qO- http://127.0.0.1/metrics | grep -q '^pickupbox_image_uploads_total'
+        run: |
+          docker compose exec -T pickup-box wget -qO- http://127.0.0.1/metrics > metrics.txt
+          for m in shares_created share_visits zip_downloads file_downloads pickup_code_failures auth_failures image_uploads; do
+            grep -qE "^pickupbox_${m}_total [1-9]" metrics.txt || { echo "metric $m missing or zero"; cat metrics.txt; exit 1; }
+          done
       - name: Garbage collection (fast GC settings)
         run: |
           printf 'PICKUP_GC_INTERVAL=2\nPICKUP_UPLOAD_GRACE=1\n' >> .env

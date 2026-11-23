@@ -41,6 +41,17 @@ function _M.incr_image_cache_miss()  dict_incr("image_cache_misses") end
 function _M.incr_image_processed()   dict_incr("image_processed") end
 function _M.incr_image_error()       dict_incr("image_errors") end
 
+-- Product counters.
+function _M.incr(name) dict_incr("pb:" .. name) end
+local PRODUCT_COUNTERS = {
+    { "shares_created", "Shares created" },
+    { "share_visits", "Pickup page opens that counted as a visit" },
+    { "pickup_code_failures", "Wrong or blocked pickup code attempts" },
+    { "auth_failures", "Failed password attempts" },
+    { "zip_downloads", "Zip archives streamed" },
+    { "file_downloads", "Single files served" },
+}
+
 local function observe_histogram(name, seconds)
     local h = histograms[name]
     if not h then return end
@@ -97,6 +108,10 @@ function _M.emit_metrics()
     say_metric("shared_dict_capacity_bytes", "gauge", "Shared dictionary capacity")
     say_metric("shared_dict_used_bytes", "gauge", "Shared dictionary used bytes")
     for _, n in ipairs(SHARED_DICTS) do emit_shared_dict(n) end
+
+    for _, c in ipairs(PRODUCT_COUNTERS) do
+        say_metric(c[1] .. "_total", "counter", c[2], dict_get("pb:" .. c[1]))
+    end
 
     say_metric("image_uploads_total", "counter", "Total uploads", dict_get("image_uploads"))
     say_metric("image_cache_hits_total", "counter", "Derivative cache hits", dict_get("image_cache_hits"))

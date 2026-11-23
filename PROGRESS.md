@@ -77,7 +77,7 @@
 
 - [x] GC（worker 0）：释放失效分享的取件码、清除过期记录、删除无引用 blob 及其缓存、清理过期 tus 会话与残留临时文件
 - [x] 上传前检查磁盘水位与口令配额（管理员不受配额限制）
-- [ ] 指标：`shares_created`、`pickup_code_failures` 等业务指标（目前只有上传/处理/下载类指标）
+- [x] 业务指标：`pickupbox_shares_created_total`、`share_visits`、`pickup_code_failures`、`auth_failures`、`zip_downloads`、`file_downloads`（CI 校验非零）
 
 ## Phase 7：部署与文档
 
@@ -91,8 +91,10 @@
 - [x] `tools/e2e.py`：约 80 项端到端检查（上传/续传/校验和/配额/分享/取件码/Range/中文文件名/HTML 附件/预览/zip 与 ZIP64/二维码/次数/机器人/撤回/延期/过期/防暴力破解/GC）
 - [x] `tools/browser_test.py`：Playwright 在模拟手机上走完整发送与取件流程，截图存档
 - [x] `spec/unit/`：配置解析、文件名清洗、UTF-8、CRC-32、类型识别、zip 结构（含 ZIP64）
+- [x] WebKit（Safari 内核）浏览器测试：发现并修复了 Safari 单文件无法下载的问题
 - [ ] 真机实测：iOS Safari、安卓微信内置浏览器（含切后台续传）——需要真人手机
-- [ ] 压力测试：并发取件页、缩略图、大文件下载
+- [x] 并发压力测试 `tools/stress.py`（并行分块上传含相同内容 + 并发取件页/预览/Range/zip），经 Caddy 运行，并检查日志无 worker 崩溃/锁库
+- [ ] 更大规模压测（真实带宽、上百并发、GB 级文件）——需要真实服务器
 
 ---
 
@@ -105,7 +107,25 @@
 
 ## CI 记录
 
-### 2026-11-23：从首次运行到全绿（共 10 轮）
+### 2026-11-23（下午）：快传功能上线到 CI 全绿（11 个 job）
+
+当前流水线：lint（Lua/JS/Python 语法、luacheck、env 声明检查、旧名检查）→ 单元测试 → 镜像构建 → 端到端（开发栈，含过期/防暴力破解/GC、指标非零、无崩溃）→ 浏览器（Chromium + WebKit，模拟 iPhone/Android）→ 生产部署（`install.sh` + Caddy HTTPS，端到端 + 并发压测 + 无崩溃）→ 无域名 HTTP 部署 → 发布 ghcr.io 多架构镜像 → 在 amd64 与 arm64 上用安装脚本拉取发布的镜像并跑端到端。
+
+这一阶段 CI 发现并修复的问题：
+
+| 问题 | 后果 |
+| --- | --- |
+| 在 `content_by_lua` 里设置 `X-Accel-Redirect` 不会被 nginx 处理 | 原来的图片接口从未真正返回过文件内容 |
+| tus PATCH 请求体被 nginx 缓冲到临时文件时被当成空 | 断点续传在真实场景下丢数据 |
+| `vips_flatten` 传了裸 C 数组而不是 `VipsArrayDouble*` | 生成 JPEG 时 worker 段错误 |
+| 编码器探测对 GIF 传 `Q` 参数 | GIF 一直被误判为不可用 |
+| `PICKUP_*` 通过辅助函数读取，未被声明到 nginx env | 只是碰巧在 master 里加载才能工作 |
+| 附件响应带 CSP `sandbox`；`text/plain` 附件被 WebKit 直接显示 | iPhone 上点“下载”没反应或显示乱码 |
+| 空 `PICKUP_DOMAIN` 被原样传给 Caddy | 无域名（用 IP 测试）模式下 Caddy 无法启动 |
+| 安装脚本在无终端时询问域名 | 非交互环境下安装中断 |
+| GC 测试用“创建分享”探测文件是否存在 | 探测本身让文件一直被引用（测试缺陷） |
+
+### 2026-11-23（上午）：从首次运行到全绿（共 10 轮）
 
 首次推送时四个 job 全红。之前的代码**从未真正构建或运行过**。逐轮修掉的问题：
 
