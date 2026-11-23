@@ -1,0 +1,10 @@
+logs/
+*.log
+.env
+*.swp
+*.tmp
+.DS_Store
+*.db
+*.db-wal
+*.db-shm
+data/

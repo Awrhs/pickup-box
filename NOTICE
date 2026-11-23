@@ -1,0 +1,11 @@
+This product includes software developed by the OpenResty community.
+
+This product uses:
+- libvips (LGPL-2.1) — https://www.libvips.org/
+- SQLite (public domain) — https://www.sqlite.org/
+- OpenResty (BSD-2-Clause) — https://openresty.org/
+- lua-resty-http, lua-resty-redis, lua-resty-string, lua-resty-core (BSD)
+
+Relevant copyright and license notices for these dependencies are
+distributed alongside their sources in the runtime image under
+/usr/local/openresty and /usr/lib.

@@ -1,0 +1,63 @@
+{
+  "title": "pickup-box",
+  "schemaVersion": 38,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Images stored",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "pickupbox_image_uploads_total", "legendFormat": "uploads" }]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Original bytes",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "sum(pickupbox_owner_bytes_used)", "legendFormat": "bytes" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Cache hit ratio",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [{
+        "expr": "rate(pickupbox_image_cache_hits_total[5m]) / (rate(pickupbox_image_cache_hits_total[5m]) + rate(pickupbox_image_cache_misses_total[5m]))",
+        "legendFormat": "hit ratio"
+      }]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Image requests/sec",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [{ "expr": "rate(pickupbox_download_requests_total[1m])", "legendFormat": "req/s" }]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Image bandwidth",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [{ "expr": "rate(pickupbox_download_bytes_total[1m])", "legendFormat": "{{unit}}" }],
+      "fieldConfig": { "defaults": { "unit": "Bps" } }
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Processing latency (p95)",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum by (le) (rate(pickupbox_image_process_duration_seconds_bucket[5m])))",
+        "legendFormat": "p95"
+      }],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Blocked requests",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "rate(pickupbox_download_ratelimited_total[5m])", "legendFormat": "rate limit" },
+        { "expr": "rate(pickupbox_download_referer_blocked_total[5m])", "legendFormat": "referer" },
+        { "expr": "rate(pickupbox_download_signature_blocked_total[5m])", "legendFormat": "signature" }
+      ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Shared dict usage",
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 8 },
+      "targets": [{
+        "expr": "pickupbox_shared_dict_used_bytes{name=~\"image_.*|upload_limit|circuit_state|metrics_stats\"} / pickupbox_shared_dict_capacity_bytes{name=~\"image_.*|upload_limit|circuit_state|metrics_stats\"}",
+        "legendFormat": "{{name}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "percentunit" } }
+    }
+  ]
+}

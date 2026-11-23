@@ -1,0 +1,19 @@
+# /etc/logrotate.d/pickup-box
+#
+# Logrotate snippet for host bind-mounts of ./logs -> /var/log/nginx in the
+# container. Copy to /etc/logrotate.d/pickup-box on the host. Rotates
+# weekly, keeps 8 weeks, and sends USR1 to the containerized nginx so it
+# reopens the log files.
+
+/path/to/pickup-box/logs/*.log {
+    weekly
+    rotate 8
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        docker kill --signal=USR1 pickup-box >/dev/null 2>&1 || true
+    endscript
+}

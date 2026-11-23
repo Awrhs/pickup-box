@@ -1,0 +1,26 @@
+# Caddyfile — minimal TLS reverse proxy in front of the gateway.
+#
+# 1. Install Caddy (https://caddyserver.com/docs/install).
+# 2. Copy to /etc/caddy/Caddyfile, replace i.example.com with your host.
+# 3. `systemctl reload caddy` (caddy fetches Let's Encrypt automatically).
+# 4. Point your DNS record at this host.
+
+i.example.com {
+    encode zstd br gzip
+
+    # Upload bodies are bounded by the gateway (20 MiB default).
+    request_body {
+        max_size 32MB
+    }
+
+    reverse_proxy 127.0.0.1:80 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Optional: serve cached images directly if you mount the volume here.
+    # handle /i/* {
+    #     root * /var/lib/pickup-box/images
+    #     file_server
+    # }
+}

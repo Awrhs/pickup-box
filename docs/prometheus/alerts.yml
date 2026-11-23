@@ -1,0 +1,35 @@
+groups:
+  - name: pickup-box
+    rules:
+      - alert: ImageProcessingErrorsHigh
+        expr: rate(pickupbox_image_errors_total[5m]) > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Image processing errors above 0.5/s for 10m"
+
+      - alert: ImageDownloadRateLimited
+        expr: rate(pickupbox_download_ratelimited_total[5m]) > 5
+        for: 5m
+        labels: { severity: info }
+        annotations:
+          summary: ">5 download requests/sec being rate-limited"
+
+      - alert: ImageCacheHitRatioLow
+        expr: |
+          (rate(pickupbox_image_cache_hits_total[10m])
+            / (rate(pickupbox_image_cache_hits_total[10m])
+              + rate(pickupbox_image_cache_misses_total[10m]))) < 0.5
+        for: 30m
+        labels: { severity: info }
+        annotations:
+          summary: "Image derivative cache hit ratio below 50%"
+
+      - alert: ImageProcessingLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(pickupbox_image_process_duration_seconds_bucket[5m]))) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Image processing p99 > 1s"

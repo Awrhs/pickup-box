@@ -1,0 +1,26 @@
+# Build / VCS
+.git/
+.github/
+spec/
+docs/
+logs/
+*.md
+!README.md
+!PROGRESS.md
+!OPTIMIZATION_SUMMARY.md
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Build artifacts
+*.o
+*.so
+c/image_vips.so
