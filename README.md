@@ -16,6 +16,8 @@
 
 ## 部署到公网服务器（3 步）
 
+> 完整的图文步骤（域名解析、安装 Docker、已有 Caddy/nginx 的服务器怎么接入、验证与维护）见 **[docs/DEPLOY.md](docs/DEPLOY.md)**。
+
 你需要：
 
 1. 一台有公网 IP 的 Linux 服务器（1 核 1 GB 内存即可，x86 和 ARM 都支持），已安装 [Docker](https://docs.docker.com/engine/install/)。
